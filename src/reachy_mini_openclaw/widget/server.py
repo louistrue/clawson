@@ -223,6 +223,16 @@ class WidgetServer:
                 return JSONResponse({"pending": None})
             return JSONResponse({"pending": confirmation.pending_description})
 
+        @app.post("/api/restart")
+        async def restart_endpoint() -> JSONResponse:
+            """Hard restart via os.execv. Returns 202 before the new
+            process takes over; the next /api/state will be served by
+            the fresh interpreter."""
+            import asyncio as _asyncio
+            from ..briefing.voice_router import _restart_self
+            _asyncio.get_event_loop().call_later(0.5, _restart_self)
+            return JSONResponse({"restarting": True}, status_code=202)
+
     async def run(self, should_stop: Callable[[], bool]) -> None:
         config = uvicorn.Config(
             self._app,

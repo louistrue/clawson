@@ -53,6 +53,23 @@ _REPEAT = re.compile(
     r"\b(say again|repeat( that)?|what (was that|did you say)|sorry( what)?)\b",
     re.I,
 )
+_RESTART = re.compile(
+    r"\b(restart yourself|reboot yourself|restart clawson|reboot clawson|reload yourself|kick yourself)\b",
+    re.I,
+)
+_STATUS = re.compile(
+    r"\b(status report|status check|how are you doing|are you (alive|there)|sit rep|sitrep)\b",
+    re.I,
+)
+_WHAT_TIME = re.compile(
+    r"\bwhat('?s)? (the )?time\b|\b(current time|tell me the time)\b", re.I,
+)
+_WHAT_MODE = re.compile(
+    r"\bwhat('?s)? (the )?mode\b|\b(current mode|which mode|what mode am i in)\b", re.I,
+)
+_CLEAR_QUEUE = re.compile(
+    r"\b(clear (the )?queue|empty (the )?queue|drop queued|forget queued)\b", re.I,
+)
 
 
 class VoiceCommandRouter:
@@ -70,11 +87,15 @@ class VoiceCommandRouter:
         standup_runner: Any,
         handler: Any,
         say: Optional[Callable[[str], Awaitable[None]]] = None,
+        event_dispatcher: Any = None,
+        focus_settings: Any = None,
     ) -> None:
         self._focus = focus_controller
         self._standup = standup_runner
         self._handler = handler
         self._say = say
+        self._dispatcher = event_dispatcher
+        self._focus_settings = focus_settings
 
     async def __call__(self, transcript: str) -> None:
         if not transcript:
@@ -148,4 +169,81 @@ class VoiceCommandRouter:
                 logger.debug("repeat_last_say failed: %s", e)
             return
 
+        if _STATUS.search(t):
+            logger.info("voice: status")
+            await self._speak_status()
+            return
+
+        if _WHAT_MODE.search(t):
+            logger.info("voice: what mode")
+            if self._say is not None:
+                await self._say(f"Mode is {self._focus.mode.value}.")
+            return
+
+        if _WHAT_TIME.search(t):
+            logger.info("voice: what time")
+            await self._speak_time()
+            return
+
+        if _CLEAR_QUEUE.search(t):
+            logger.info("voice: clear queue")
+            cleared = 0
+            if self._dispatcher is not None:
+                cleared = len(self._dispatcher.drain_queued())
+            if self._say is not None:
+                await self._say(
+                    f"Cleared {cleared} queued events."
+                    if cleared else "Queue is already empty."
+                )
+            return
+
+        if _RESTART.search(t):
+            logger.info("voice: restart")
+            if self._say is not None:
+                await self._say("Restarting now.")
+            # Schedule the exec on the next tick so the say() can flush.
+            import asyncio
+            asyncio.get_event_loop().call_later(1.0, _restart_self)
+            return
+
         # No match → let the LLM handle the turn normally.
+
+    async def _speak_status(self) -> None:
+        if self._say is None:
+            return
+        mode = self._focus.mode.value
+        snooze_until = self._focus.state.snooze_until
+        queued = len(self._dispatcher.queued_events) if self._dispatcher else 0
+        recent = len(self._dispatcher.recent_events) if self._dispatcher else 0
+        parts = [f"Mode {mode}."]
+        if snooze_until is not None:
+            from datetime import datetime, timezone
+            tz = self._focus_settings.tzinfo() if self._focus_settings else timezone.utc
+            local = snooze_until.astimezone(tz)
+            parts.append(f"Snooze until {local.strftime('%H:%M')}.")
+        if queued:
+            parts.append(f"{queued} queued.")
+        if recent:
+            parts.append(f"{recent} recent.")
+        if not queued and not recent:
+            parts.append("No recent events.")
+        await self._say(" ".join(parts))
+
+    async def _speak_time(self) -> None:
+        if self._say is None:
+            return
+        from datetime import datetime, timezone
+        tz = self._focus_settings.tzinfo() if self._focus_settings else timezone.utc
+        now = datetime.now(tz)
+        await self._say(now.strftime("It is %H:%M, %A."))
+
+
+def _restart_self() -> None:
+    """Replace the current process image with a fresh exec of the same
+    command line. PID is preserved; in-flight WebSockets close ungracefully
+    but the new process opens fresh ones."""
+    import logging as _logging
+    import os as _os
+    import sys as _sys
+    _logging.getLogger(__name__).warning("restart requested — exec'ing fresh process")
+    _os.execv(_sys.executable, [_sys.executable, *_sys.argv])

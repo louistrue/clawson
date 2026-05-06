@@ -398,6 +398,8 @@ class ClawBodyCore:
             standup_runner=self.standup_runner,
             handler=self.handler,
             say=_say,
+            event_dispatcher=self.event_dispatcher,
+            focus_settings=self.clawson_cfg.focus,
         )
         self.handler.on_user_transcript = self.voice_router
 

@@ -104,6 +104,7 @@ PAGE = """<!doctype html>
     <div class="row" style="margin-top: 6px;">
       <button class="primary" onclick="post('/api/standup')">▶ Standup</button>
       <button onclick="post('/api/queue/clear')">Clear queue</button>
+      <button class="warn" onclick="confirmRestart()">↻ Restart</button>
     </div>
   </div>
 
@@ -127,6 +128,10 @@ PAGE = """<!doctype html>
       <div><code>standup</code> / <code>rollup</code> / <code>what's queued</code></div>
       <div><code>shut up</code> / <code>be quiet</code></div>
       <div><code>say again</code> / <code>repeat</code></div>
+      <div><code>status</code> / <code>are you alive</code></div>
+      <div><code>what mode</code> / <code>what time</code></div>
+      <div><code>clear queue</code></div>
+      <div><code>restart yourself</code></div>
     </div>
     <div class="muted small" style="margin-top: 10px;">
       Quick yes/no via head gesture: <strong>nod</strong> = yes, <strong>shake</strong> (or twist base) = no.
@@ -144,6 +149,12 @@ PAGE = """<!doctype html>
     refresh();
   }
   async function snooze(minutes) { await post('/api/snooze', {minutes}); }
+
+  async function confirmRestart() {
+    if (!confirm('Restart Clawson? In-flight conversations will drop.')) return;
+    await fetch('/api/restart', {method: 'POST'});
+    document.getElementById('heartbeat-text').textContent = 'restarting…';
+  }
 
   function fmtEvent(e) {
     let tone = 'ev-info';
