@@ -536,6 +536,188 @@ class ClawBodyCore:
                 ),
             ))
 
+        # GitHub issue tools (read-only, no confirmation needed).
+        if self.clawson_cfg.github_enabled and self.github_client is not None:
+            async def _list_repo_issues(args: dict) -> dict:
+                repo = (args.get("repo") or "").strip()
+                if "/" not in repo:
+                    return {"status": "error", "error": "repo must be 'owner/name'"}
+                state = args.get("state") or "open"
+                limit = int(args.get("limit") or 10)
+                try:
+                    issues = await self.github_client.list_repo_issues(
+                        repo, state=state, per_page=min(max(limit, 1), 50),
+                    )
+                except Exception as e:
+                    return {"status": "error", "error": str(e)}
+                # Strip out PRs (GitHub returns them in /issues).
+                issues = [i for i in issues if not i.is_pull_request][:limit]
+                return {
+                    "status": "ok",
+                    "repo": repo,
+                    "state": state,
+                    "count": len(issues),
+                    "issues": [
+                        {
+                            "number": i.number,
+                            "title": i.title,
+                            "labels": i.labels,
+                            "assignee": i.assignee_login,
+                            "url": i.html_url,
+                            "updated_at": i.updated_at.isoformat(),
+                        }
+                        for i in issues
+                    ],
+                }
+
+            self.action_registry.register(Action(
+                name="list_repo_issues",
+                tool_spec={
+                    "type": "function",
+                    "name": "list_repo_issues",
+                    "description": (
+                        "List GitHub issues for one specific repository. Use "
+                        "for 'open issues in owner/repo', 'what's in repo X', "
+                        "'show me issues for X'. Read-only, no confirmation."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "repo": {
+                                "type": "string",
+                                "description": "owner/name format, e.g. 'louistrue/clawson'",
+                            },
+                            "state": {
+                                "type": "string",
+                                "enum": ["open", "closed", "all"],
+                                "default": "open",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "default": 10,
+                                "description": "max issues to return (1-50)",
+                            },
+                        },
+                        "required": ["repo"],
+                    },
+                },
+                executor=_list_repo_issues,
+                requires_confirmation=False,
+            ))
+
+            async def _list_my_open_issues(args: dict) -> dict:
+                filt = (args.get("filter") or "assigned")
+                state = args.get("state") or "open"
+                limit = int(args.get("limit") or 20)
+                try:
+                    issues = await self.github_client.list_my_issues(
+                        filter_str=filt, state=state,
+                        per_page=min(max(limit, 1), 100),
+                    )
+                except Exception as e:
+                    return {"status": "error", "error": str(e)}
+                issues = [i for i in issues if not i.is_pull_request][:limit]
+                return {
+                    "status": "ok",
+                    "filter": filt,
+                    "state": state,
+                    "count": len(issues),
+                    "issues": [
+                        {
+                            "repo": i.repo,
+                            "number": i.number,
+                            "title": i.title,
+                            "labels": i.labels,
+                            "url": i.html_url,
+                            "updated_at": i.updated_at.isoformat(),
+                        }
+                        for i in issues
+                    ],
+                }
+
+            self.action_registry.register(Action(
+                name="list_my_open_issues",
+                tool_spec={
+                    "type": "function",
+                    "name": "list_my_open_issues",
+                    "description": (
+                        "List GitHub issues across ALL repositories that "
+                        "involve the user (assigned, created, mentioned). Use "
+                        "for 'what issues do I have', 'what's on my plate', "
+                        "cross-repo issue queries. Read-only, no confirmation."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "filter": {
+                                "type": "string",
+                                "enum": ["assigned", "created", "mentioned",
+                                         "subscribed", "all"],
+                                "default": "assigned",
+                            },
+                            "state": {
+                                "type": "string",
+                                "enum": ["open", "closed", "all"],
+                                "default": "open",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "default": 20,
+                            },
+                        },
+                    },
+                },
+                executor=_list_my_open_issues,
+                requires_confirmation=False,
+            ))
+
+            async def _open_repo(args: dict) -> dict:
+                repo = (args.get("repo") or "").strip()
+                if "/" not in repo:
+                    return {"status": "error", "error": "repo must be 'owner/name'"}
+                url = f"https://github.com/{repo}"
+                # Drop a clickable into the widget recent panel.
+                try:
+                    from reachy_mini_openclaw.briefing.events import (
+                        Event as _Ev, EventSeverity as _Sev,
+                    )
+                    from datetime import datetime as _dt, timezone as _tz
+                    self.event_dispatcher._recent_events.append(_Ev(
+                        source="self", kind="link",
+                        summary=f"Opened repo {repo}",
+                        link=url, ts=_dt.now(_tz.utc),
+                        fingerprint=f"self:open:{repo}:{int(_dt.now().timestamp())}",
+                        severity=_Sev.INFO,
+                    ))
+                except Exception:
+                    pass
+                return {"status": "ok", "repo": repo, "url": url}
+
+            self.action_registry.register(Action(
+                name="open_repo",
+                tool_spec={
+                    "type": "function",
+                    "name": "open_repo",
+                    "description": (
+                        "Surface a specific GitHub repo to the user (URL "
+                        "logged into widget). Use for 'open louistrue/clawson', "
+                        "'show me the X repo'. Read-only, no confirmation."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "repo": {
+                                "type": "string",
+                                "description": "owner/name format",
+                            },
+                        },
+                        "required": ["repo"],
+                    },
+                },
+                executor=_open_repo,
+                requires_confirmation=False,
+            ))
+
         # Calendar poller (ICS feed).
         self.calendar_client: Optional[Any] = None
         self.calendar_poller: Optional[Any] = None

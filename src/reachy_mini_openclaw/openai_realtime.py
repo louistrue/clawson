@@ -728,11 +728,14 @@ OpenClaw has access to many capabilities you don't have directly.""",
                     # ["audio"] alone is rejected.
                     "modalities": ["audio", "text"],
                     "instructions": (
-                        f"You are saying this short status update aloud in "
-                        f"English, in your normal voice. Do not add a greeting, "
-                        f"a preamble, the word 'announcement', quotation marks, "
-                        f"or any commentary. Do not translate. Just speak it "
-                        f"naturally and stop:\n\n"
+                        f"SYSTEM ANNOUNCEMENT — ignore conversation context.\n"
+                        f"Do NOT continue any topic from prior turns. Do NOT "
+                        f"answer any prior question. Do NOT ask follow-ups. Do "
+                        f"NOT add 'is there anything else' or similar coda. Do "
+                        f"NOT start with 'oh', 'so', 'okay', or any preamble. "
+                        f"Do NOT include the word 'announcement' or quotes.\n\n"
+                        f"OUTPUT ONLY the following text aloud in English in "
+                        f"your normal voice, then STOP:\n\n"
                         f"{text}"
                     ),
                 }

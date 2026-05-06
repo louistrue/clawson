@@ -36,6 +36,22 @@ class Notification:
 
 
 @dataclass(frozen=True)
+class Issue:
+    number: int
+    title: str
+    state: str            # "open" | "closed"
+    repo: str             # "owner/name"
+    user_login: str
+    assignee_login: Optional[str]
+    labels: List[str]
+    html_url: str
+    is_pull_request: bool
+    body_excerpt: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class WorkflowRun:
     id: int
     repo: str
@@ -189,6 +205,73 @@ class GitHubClient:
                 raw=n,
             ))
         return out
+
+    async def list_repo_issues(
+        self,
+        repo: str,
+        *,
+        state: str = "open",
+        per_page: int = 30,
+    ) -> List[Issue]:
+        """List issues for a single repo. Note GitHub returns PRs in this
+        endpoint too — they're filtered out by Issue.is_pull_request."""
+        params: Dict[str, Any] = {
+            "state": state,
+            "per_page": min(max(per_page, 1), 100),
+        }
+        raw = await self._get_json(f"/repos/{repo}/issues", params=params)
+        if raw is None:
+            return []
+        return [self._parse_issue(d, repo=repo) for d in raw]
+
+    async def list_my_issues(
+        self,
+        *,
+        filter_str: str = "assigned",
+        state: str = "open",
+        per_page: int = 50,
+    ) -> List[Issue]:
+        """Cross-repo list of issues touching me. `filter_str`:
+            assigned    — issues assigned to me (default)
+            created     — issues I created
+            mentioned   — issues I've been mentioned in
+            subscribed  — issues I'm watching
+            all         — anything I touched
+        """
+        params: Dict[str, Any] = {
+            "filter": filter_str,
+            "state": state,
+            "per_page": min(max(per_page, 1), 100),
+        }
+        raw = await self._get_json("/issues", params=params)
+        if raw is None:
+            return []
+        out: List[Issue] = []
+        for d in raw:
+            repo_url = d.get("repository_url", "")
+            repo = repo_url.replace("https://api.github.com/repos/", "") if repo_url else ""
+            out.append(self._parse_issue(d, repo=repo))
+        return out
+
+    @staticmethod
+    def _parse_issue(d: Dict[str, Any], *, repo: str) -> Issue:
+        body = (d.get("body") or "").strip()
+        excerpt = body[:200] + ("…" if len(body) > 200 else "")
+        return Issue(
+            number=int(d.get("number", 0)),
+            title=d.get("title", ""),
+            state=d.get("state", ""),
+            repo=repo,
+            user_login=(d.get("user") or {}).get("login", ""),
+            assignee_login=((d.get("assignee") or {}).get("login")
+                             if d.get("assignee") else None),
+            labels=[l.get("name", "") for l in (d.get("labels") or [])],
+            html_url=d.get("html_url", ""),
+            is_pull_request="pull_request" in d,
+            body_excerpt=excerpt,
+            created_at=_parse_dt(d.get("created_at")) or datetime.now(timezone.utc),
+            updated_at=_parse_dt(d.get("updated_at")) or datetime.now(timezone.utc),
+        )
 
     async def list_workflow_runs(
         self,
