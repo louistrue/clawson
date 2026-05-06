@@ -37,9 +37,9 @@ PEAK_THRESHOLD_RAD_S = 0.7
 ZERO_CROSSINGS_REQUIRED = 3       # → at least 1.5 oscillation cycles
 MIN_AXIS_DOMINANCE = 2.0          # primary axis must beat the other by this ×
 
-# Cooldown between consecutive emissions so a single gesture doesn't fire
-# multiple events.
-GESTURE_COOLDOWN_S = 0.8
+# Cooldown between consecutive emissions so a single sustained gesture
+# (nod for 3 seconds, etc.) only fires ONE event.
+GESTURE_COOLDOWN_S = 2.5
 
 
 @dataclass

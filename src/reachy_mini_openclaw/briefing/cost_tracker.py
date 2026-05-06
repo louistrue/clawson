@@ -28,7 +28,10 @@ def _state_root() -> Path:
 
 
 DEFAULT_USAGE_PATH = _state_root() / "usage.json"
-DEFAULT_DAILY_MAX_SAYS = 200
+# Bumped from 200 → 1000. 200 was hitting during normal testing/usage
+# (every gesture, every snooze, every event preview burns one). Real
+# runaway protection sits closer to ~1000–2000 announcements/day.
+DEFAULT_DAILY_MAX_SAYS = 1000
 
 
 @dataclass
