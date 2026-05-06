@@ -98,10 +98,11 @@ clawbody = "reachy_mini_openclaw.main:main"
 clawbody = "reachy_mini_openclaw.main:ClawBodyApp"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/clawbody"
-Documentation = "https://github.com/yourusername/clawbody#readme"
-Repository = "https://github.com/yourusername/clawbody"
-Issues = "https://github.com/yourusername/clawbody/issues"
+Homepage = "https://github.com/louistrue/clawson"
+Documentation = "https://github.com/louistrue/clawson#readme"
+Repository = "https://github.com/louistrue/clawson"
+Issues = "https://github.com/louistrue/clawson/issues"
+Upstream = "https://github.com/tomrikert/clawbody"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,11 +1,11 @@
 ---
-title: ClawBody
+title: Clawson
 emoji: 🦞
 colorFrom: red
 colorTo: purple
 sdk: static
 pinned: false
-short_description: OpenClaw AI with robot body and face tracking
+short_description: Personal coding/work buddy on Reachy Mini — fork of clawbody
 tags:
  - reachy_mini
  - reachy_mini_python_app
@@ -31,11 +31,15 @@ tags:
  - human-robot-interaction
 ---
 
-# 🦞🤖 ClawBody
+# 🦞🤖 Clawson
 
-**Give your OpenClaw AI agent a physical robot body!**
+**A personal coding & work buddy on Reachy Mini Wireless.**
 
-ClawBody combines OpenClaw's AI intelligence with Reachy Mini's expressive robot body, using OpenAI's Realtime API for ultra-responsive voice conversation. Your OpenClaw assistant (Clawson) can now see, hear, speak, and move in the physical world.
+> **This is a fork** of [`tomrikert/clawbody`](https://github.com/tomrikert/clawbody) extending it into a full personal assistant. Upstream gives Clawson a body, OpenClaw brain, voice, and face tracking. This fork adds focus modes, snoozes, GitHub + Vercel monitoring, gesture-mapped notifications, a morning standup briefing, and a desktop widget.
+>
+> See [`plan.md`](plan.md) for the full v1 design.
+
+Clawson combines OpenClaw's AI intelligence with Reachy Mini's expressive robot body, using OpenAI's Realtime API for ultra-responsive voice conversation. Your OpenClaw assistant (Clawson) can see, hear, speak, and move in the physical world — and now reacts in real time to your work surfaces too.
 
 ![Reachy Mini Dance](https://huggingface.co/spaces/pollen-robotics/reachy_mini_conversation_app/resolve/main/docs/assets/reachy_mini_dance.gif)
 
