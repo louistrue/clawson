@@ -519,8 +519,17 @@ class ClawBodyCore:
         from reachy_mini_openclaw.gestures import WiggleAntennaMove as _WiggleMove
 
         async def _on_head_gesture(ev: "HeadGestureEvent") -> None:
-            logger.info("head gesture: %s", ev.kind)
-            # 1. Instant antenna wiggle — right for YES, left for NO.
+            # Head gestures are confirmation-only, same as antennas.
+            # Without a pending question we ignore them entirely — the
+            # face tracker rotates the head all the time, and we don't
+            # want every face-tracker movement to wiggle antennas /
+            # speak "yes" / "no". Mode/snooze/standup all go through
+            # voice + widget instead.
+            if self.confirmation is None or not self.confirmation.has_pending:
+                logger.debug("head gesture %s ignored (no pending confirmation)", ev.kind)
+                return
+            logger.info("head gesture: %s (confirming)", ev.kind)
+            # Snappy visual ack — right antenna for YES, left for NO.
             try:
                 pose = self.movement_manager.state.last_primary_pose
                 if pose is not None:
@@ -529,17 +538,10 @@ class ClawBodyCore:
                     self.movement_manager.queue_move(_WiggleMove(side, head, ant))
             except Exception as e:
                 logger.debug("wiggle queue failed: %s", e)
-
-            # 2. Semantic action.
-            if self.confirmation is not None and self.confirmation.has_pending:
-                if ev.kind == "nod":
-                    self.confirmation.confirm()
-                elif ev.kind == "shake":
-                    self.confirmation.deny()
-                return
-            # 3. Spoken ack — fire-and-forget so it doesn't block the
-            # detector loop's next sample window.
-            asyncio.create_task(_say("yes" if ev.kind == "nod" else "no"))
+            if ev.kind == "nod":
+                self.confirmation.confirm()
+            elif ev.kind == "shake":
+                self.confirmation.deny()
 
         self.head_gesture_detector = HeadGestureDetector(
             imu_reader=make_imu_reader(self.robot),
