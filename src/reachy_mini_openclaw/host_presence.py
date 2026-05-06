@@ -96,25 +96,42 @@ class HostPresenceMonitor:
         return host, int(port)
 
     async def _probe(self) -> bool:
-        """Attempt a TCP connection. True iff the kernel-level connect
-        succeeded within PROBE_TIMEOUT_S. We don't send any bytes — the
-        gateway protocol is irrelevant for liveness."""
+        """L7 probe: open TCP, send a HEAD request, require ANY response.
+
+        Pure TCP-connect lies on macOS: when the laptop is asleep with
+        Power Nap or Wake-for-Network-Access on, the kernel can complete
+        SYN-ACK while the actual OpenClaw process is suspended. Forcing
+        a small HTTP round trip filters that out — if the application
+        thread isn't running, nobody reads our bytes and we time out.
+        """
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self._host, self._port),
                 timeout=PROBE_TIMEOUT_S,
             )
-            writer.close()
+        except (asyncio.TimeoutError, OSError) as e:
+            logger.debug(
+                "host probe %s:%d connect failed: %s",
+                self._host, self._port, e,
+            )
+            return False
+        try:
+            writer.write(b"HEAD / HTTP/1.0\r\nHost: probe\r\n\r\n")
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(64), timeout=2.0)
+            return len(data) > 0
+        except (asyncio.TimeoutError, OSError) as e:
+            logger.debug(
+                "host probe %s:%d L7 failed: %s",
+                self._host, self._port, e,
+            )
+            return False
+        finally:
             try:
+                writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
-            return True
-        except (asyncio.TimeoutError, OSError) as e:
-            logger.debug(
-                "host probe %s:%d failed: %s", self._host, self._port, e
-            )
-            return False
 
     async def force_recheck(self) -> None:
         """Skip the next sleep and run a probe immediately. Used by the

@@ -22,9 +22,12 @@ from reachy_mini.utils import create_head_pose
 from reachy_mini.utils.interpolation import linear_pose_interpolation
 
 
-# Pose constants. SDK-derived but tuned to be less dramatic.
-_SLEEP_PITCH_DEG = -15.0       # gentle nod down (SDK uses ~-24°)
-_SLEEP_Z_MM = -4.0             # tiny drop so head visibly droops
+# Pose constants. Bowed down enough to read as 'sleeping' but not as
+# pronounced as the SDK off-pose (which is ~-24° / -44 mm). The gap
+# between gentle-sleep and off-pose is intentional — interactive
+# sleep should look soft, the shutdown pose should look final.
+_SLEEP_PITCH_DEG = -22.0       # gentle but visibly bowed
+_SLEEP_Z_MM = -8.0             # small drop reinforcing the bow
 _SLEEP_HEAD_POSE = create_head_pose(
     x=0.0, y=0.0, z=_SLEEP_Z_MM,
     roll=0.0, pitch=_SLEEP_PITCH_DEG, yaw=0.0,
