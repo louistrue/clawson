@@ -24,22 +24,23 @@ from typing import Any, Awaitable, Callable, Deque, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Polling cadence.
-POLL_INTERVAL_S = 0.05            # 20 Hz
-WINDOW_S = 1.2                    # rolling window for oscillation detection
+# Polling cadence — fast loop so a quick tap registers without delay.
+POLL_INTERVAL_S = 0.025           # 40 Hz
+
+# Short rolling window so we can react to ANY quick impulse (head-top
+# tap, single base nudge), not just sustained oscillations.
+WINDOW_S = 0.35
 
 # Detection thresholds (rad/s on the relevant gyro axis).
-# Tuned 2026-05-06 against on-robot recordings: nods peak around ±1.0
-# rad/s, head shakes around ±1.5, base-rotation shakes ±2.3. Idle
-# breathing noise sits at ±0.05. 0.7 is the sweet spot — catches all
-# real gestures without tripping on minor sway.
-PEAK_THRESHOLD_RAD_S = 0.7
-ZERO_CROSSINGS_REQUIRED = 3       # → at least 1.5 oscillation cycles
-MIN_AXIS_DOMINANCE = 2.0          # primary axis must beat the other by this ×
+# Idle/breathing noise sits at ±0.05. A short tap easily clears 0.4.
+# Single-peak detection — no oscillation requirement, so even one
+# half-cycle counts.
+PEAK_THRESHOLD_RAD_S = 0.4
+MIN_AXIS_DOMINANCE = 1.6          # primary axis must beat the other by this ×
 
-# Cooldown between consecutive emissions so a single sustained gesture
-# (nod for 3 seconds, etc.) only fires ONE event.
-GESTURE_COOLDOWN_S = 2.5
+# Cooldown so a single sustained gesture only fires ONE event but
+# rapid yes-then-no still gets through.
+GESTURE_COOLDOWN_S = 0.7
 
 
 @dataclass
@@ -51,45 +52,27 @@ class HeadGestureEvent:
 _Sample = Tuple[float, float, float, float, float]
 
 
-def _zero_crossings(values: list[float]) -> int:
-    n = 0
-    for i in range(1, len(values)):
-        if values[i - 1] == 0 or values[i] == 0:
-            continue
-        if (values[i - 1] > 0) != (values[i] > 0):
-            n += 1
-    return n
-
-
 def _peak_abs(values: list[float]) -> float:
     return max((abs(v) for v in values), default=0.0)
 
 
 def detect_gesture(samples: list[_Sample]) -> Optional[HeadGestureEvent]:
-    """Run nod/shake heuristics over a window of samples."""
-    if len(samples) < 6:
-        return None
-    gyro_y = [s[1] for s in samples]   # pitch rate
-    gyro_z = [s[2] for s in samples]   # yaw rate
+    """Single-impulse nod/shake detector. Fires on the strongest peak in
+    the rolling window — no oscillation requirement, so even one quick
+    tap or nudge counts. Whichever axis dominates wins.
 
+    nod  → gyro_y peak (pitch — head top tap, downward push)
+    shake → gyro_z peak (yaw — base rotation, head twist)
+    """
+    if len(samples) < 3:
+        return None
+    gyro_y = [s[1] for s in samples]
+    gyro_z = [s[2] for s in samples]
     peak_y = _peak_abs(gyro_y)
     peak_z = _peak_abs(gyro_z)
-    cross_y = _zero_crossings(gyro_y)
-    cross_z = _zero_crossings(gyro_z)
-
-    nod_strong = (
-        peak_y >= PEAK_THRESHOLD_RAD_S
-        and cross_y >= ZERO_CROSSINGS_REQUIRED
-        and peak_y >= MIN_AXIS_DOMINANCE * peak_z
-    )
-    shake_strong = (
-        peak_z >= PEAK_THRESHOLD_RAD_S
-        and cross_z >= ZERO_CROSSINGS_REQUIRED
-        and peak_z >= MIN_AXIS_DOMINANCE * peak_y
-    )
-    if nod_strong and not shake_strong:
+    if peak_y >= PEAK_THRESHOLD_RAD_S and peak_y >= MIN_AXIS_DOMINANCE * peak_z:
         return HeadGestureEvent(kind="nod")
-    if shake_strong and not nod_strong:
+    if peak_z >= PEAK_THRESHOLD_RAD_S and peak_z >= MIN_AXIS_DOMINANCE * peak_y:
         return HeadGestureEvent(kind="shake")
     return None
 

@@ -134,6 +134,46 @@ class HappyBounceMove(_GestureBase):
         return (head, ant, 0.0)
 
 
+class WiggleAntennaMove(_GestureBase):
+    """Instant single-antenna wiggle for snappy yes/no feedback.
+
+    Right antenna = YES detected (nod). Left antenna = NO detected (shake).
+    Total duration ~250ms — half-sine envelope so it deflects then snaps
+    back to neutral. Queued via MovementManager so latency is one
+    100Hz tick (~10ms).
+    """
+
+    def __init__(
+        self,
+        side: str,
+        start_pose: NDArray[np.float32],
+        start_antennas: Tuple[float, float] = (0.0, 0.0),
+        *,
+        amplitude_rad: float = 0.7,
+        duration: float = 0.25,
+    ) -> None:
+        self.start_pose = start_pose
+        self.start_antennas = start_antennas
+        self._side = side
+        self._amplitude = amplitude_rad
+        self._duration = duration
+        self._neutral_pose = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True, mm=True)
+
+    @property
+    def duration(self) -> float:
+        return self._duration
+
+    def evaluate(self, t: float) -> tuple:
+        # Half-sine: 0 → peak → 0 over [0, duration].
+        phase = math.pi * max(0.0, min(1.0, t / self._duration))
+        offset = self._amplitude * math.sin(phase)
+        if self._side == "left":
+            ant = np.array([offset, 0.0], dtype=np.float64)
+        else:  # right (default)
+            ant = np.array([0.0, offset], dtype=np.float64)
+        return (self._neutral_pose, ant, 0.0)
+
+
 class SmallNodMove(_GestureBase):
     """Brief acknowledging nod. Mapped to review_requested / mention / issue_assigned."""
 

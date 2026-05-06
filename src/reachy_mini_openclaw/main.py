@@ -501,19 +501,34 @@ class ClawBodyCore:
             is_within_active_hours=is_within_active_hours,
         )
 
-        # Head-gesture detector (nod = yes, shake = no). For now wired
-        # only as a logger + announce; later it'll feed ConfirmationSystem
-        # so action-mode confirmations accept a nod or a shake.
+        # Head-gesture detector (nod = yes, shake = no).
+        # Snappy feedback path: queue a single-antenna wiggle FIRST so the
+        # user sees acknowledgement within ~10ms, then handle semantics
+        # (confirmation route or spoken ack) async without blocking.
+        from reachy_mini_openclaw.gestures import WiggleAntennaMove as _WiggleMove
+
         async def _on_head_gesture(ev: "HeadGestureEvent") -> None:
             logger.info("head gesture: %s", ev.kind)
-            # Phase A: route to confirmation if pending; otherwise just log.
+            # 1. Instant antenna wiggle — right for YES, left for NO.
+            try:
+                pose = self.movement_manager.state.last_primary_pose
+                if pose is not None:
+                    head, ant, _yaw = pose
+                    side = "right" if ev.kind == "nod" else "left"
+                    self.movement_manager.queue_move(_WiggleMove(side, head, ant))
+            except Exception as e:
+                logger.debug("wiggle queue failed: %s", e)
+
+            # 2. Semantic action.
             if self.confirmation is not None and self.confirmation.has_pending:
                 if ev.kind == "nod":
                     self.confirmation.confirm()
                 elif ev.kind == "shake":
                     self.confirmation.deny()
                 return
-            await _say(f"detected {ev.kind}")
+            # 3. Spoken ack — fire-and-forget so it doesn't block the
+            # detector loop's next sample window.
+            asyncio.create_task(_say("yes" if ev.kind == "nod" else "no"))
 
         self.head_gesture_detector = HeadGestureDetector(
             imu_reader=make_imu_reader(self.robot),

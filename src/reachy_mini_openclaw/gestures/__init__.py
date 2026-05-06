@@ -9,6 +9,7 @@ from .vocabulary import (
     HeadDroopMove,
     HappyBounceMove,
     SmallNodMove,
+    WiggleAntennaMove,
     gesture_for_event,
 )
 from .cues import cue_for_event
@@ -17,6 +18,7 @@ __all__ = [
     "HeadDroopMove",
     "HappyBounceMove",
     "SmallNodMove",
+    "WiggleAntennaMove",
     "gesture_for_event",
     "cue_for_event",
 ]
