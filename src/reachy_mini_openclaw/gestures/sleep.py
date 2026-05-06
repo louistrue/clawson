@@ -41,6 +41,28 @@ _SLEEP_ANTENNAS = np.array([-3.05, 3.05], dtype=np.float64)
 _AWAKE_ANTENNAS = np.array([0.0, 0.0], dtype=np.float64)
 _NEUTRAL_HEAD_POSE = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True, mm=True)
 
+# Canonical "off / power-down" pose, copied verbatim from the upstream
+# Reachy Mini SDK (pollen-robotics/reachy-mini, daemon/backend/abstract.py
+# at SLEEP_HEAD_POSE). The daemon commands this exact 4x4 transform when
+# shutting down. Decodes to: pitch ≈ +24.4° (chin forward / head bowed
+# down), x = -21 mm, z = -44 mm — visibly more pronounced than the
+# gentler interactive sleep pose above.
+#
+# We hardcode the matrix rather than going through create_head_pose so
+# pitch sign-convention differences between the SDK's matrix builder
+# and ours can't cause the head to bow the wrong way.
+_OFF_HEAD_POSE = np.array(
+    [
+        [ 0.911,  0.004,  0.413, -0.021],
+        [-0.004,  1.0,   -0.001,  0.001],
+        [-0.413, -0.001,  0.911, -0.044],
+        [ 0.0,    0.0,    0.0,    1.0  ],
+    ],
+    dtype=np.float32,
+)
+# Same antennas as gentle sleep — folded fully back.
+_OFF_ANTENNAS = _SLEEP_ANTENNAS
+
 
 def _smoothstep(a: float) -> float:
     """3a²-2a³ — gentle in/out, no overshoot."""
@@ -106,6 +128,38 @@ class SleepHoldMove(Move):
                 self.SNORE_MIN_S, self.SNORE_MAX_S
             )
         return (_SLEEP_HEAD_POSE, ant.astype(np.float64), 0.0)
+
+
+class OffPoseMove(Move):
+    """Smoothly transitions to the SDK's canonical off / shutdown pose.
+
+    Used by the SIGTERM handler so the robot visibly powers down (head
+    bowed forward, antennas folded back) before the process exits.
+    Different from GoToSleepMove — this is the *terminal* shutdown
+    pose, not the interactive 'I'm idle' pose. Duration matches the
+    SDK's `goto_sleep` (2.0 s).
+    """
+
+    def __init__(
+        self,
+        start_pose: NDArray[np.float32] = _NEUTRAL_HEAD_POSE,
+        start_antennas: Tuple[float, float] = (0.0, 0.0),
+        *,
+        duration: float = 2.0,
+    ) -> None:
+        self.start_pose = start_pose
+        self.start_antennas = np.array(start_antennas, dtype=np.float64)
+        self._duration = duration
+
+    @property
+    def duration(self) -> float:
+        return self._duration
+
+    def evaluate(self, t: float) -> tuple:
+        alpha = _smoothstep(min(1.0, t / self._duration))
+        head = linear_pose_interpolation(self.start_pose, _OFF_HEAD_POSE, alpha)
+        ant = (1.0 - alpha) * self.start_antennas + alpha * _OFF_ANTENNAS
+        return (head, ant.astype(np.float64), 0.0)
 
 
 class WakeUpMove(Move):

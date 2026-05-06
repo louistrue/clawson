@@ -1,0 +1,10 @@
+# Allow the pollen user to start/stop the clawson service without a
+# password — needed by clawson-watcher.service which controls
+# clawson.service lifecycle based on desk PC reachability.
+#
+# Strictly limited: only these three commands, only this one service,
+# no other systemctl operations and nothing as any other user.
+#
+# Install with mode 0440 at /etc/sudoers.d/clawson-watcher.
+
+pollen ALL=(root) NOPASSWD: /usr/bin/systemctl start clawson, /usr/bin/systemctl stop clawson, /usr/bin/systemctl is-active clawson, /bin/systemctl start clawson, /bin/systemctl stop clawson, /bin/systemctl is-active clawson

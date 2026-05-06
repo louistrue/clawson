@@ -1,0 +1,28 @@
+[Unit]
+Description=Clawson host-presence watchdog (start/stop clawson on PC online/offline)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pollen
+Group=pollen
+WorkingDirectory=/home/pollen/clawbody
+
+EnvironmentFile=-/home/pollen/clawbody/.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/venvs/apps_venv/bin/python -u -m reachy_mini_openclaw.watcher
+StandardOutput=append:/var/log/clawson/watcher.log
+StandardError=append:/var/log/clawson/watcher.log
+
+# Always alive — this is the brain that decides when clawson runs.
+Restart=always
+RestartSec=10s
+
+# Tight resource ceilings — the watcher should be tiny.
+MemoryMax=64M
+CPUQuota=10%
+
+[Install]
+WantedBy=multi-user.target

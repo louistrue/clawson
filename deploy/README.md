@@ -4,19 +4,29 @@ Goal: when the desk PC powers on, Clawson is already up (or comes up)
 on the robot. When the PC is off, Clawson goes to sleep pose and stops
 burning OpenAI tokens. No manual SSH, no manual `start_claw.sh`.
 
-Architecture is "always-on robot, software-gated activity":
+Architecture: always-on watcher controls a fully-stopping main service.
 
 ```
 desk PC (Windows)                       Reachy Mini (Linux)
-┌─────────────────────────┐             ┌──────────────────────────────┐
-│  OpenClaw gateway       │ ◀── ws ───  │  Clawson (systemd)           │
-│  (Scheduled Task,       │             │   ├─ host_presence monitor   │
-│   at logon)             │             │   │   probes PC every 10s    │
-└─────────────────────────┘             │   ├─ realtime (paused when   │
-        ▲                               │   │   PC offline)            │
-        │ Tailscale                     │   └─ sleep pose on offline   │
-        ▼                               └──────────────────────────────┘
+┌─────────────────────────┐             ┌────────────────────────────────┐
+│  OpenClaw gateway       │ ◀── ws ───  │  clawson-watcher.service       │
+│  (Scheduled Task,       │             │   probes PC every 10s          │
+│   at logon)             │             │   │                            │
+└─────────────────────────┘             │   ├─ host online + clawson off │
+        ▲                               │   │   → systemctl start clawson│
+        │ Tailscale                     │   │                            │
+        ▼                               │   └─ host off ≥60s + active    │
+                                        │       → systemctl stop clawson │
+                                        │                                │
+                                        │  clawson.service (transient)   │
+                                        │   on SIGTERM: bow head to      │
+                                        │   SDK off-pose, then exit      │
+                                        └────────────────────────────────┘
 ```
+
+When the desk PC is off, the clawson process is fully stopped — no
+realtime session, no pollers, no idle CPU. The robot itself stays
+powered with its head bowed in the SDK's canonical off pose.
 
 Set up in two halves: robot first, then PC.
 
@@ -30,9 +40,16 @@ crash, logs to `/var/log/clawson/clawson.log` and journald.
 ```bash
 # from your laptop, with the clawson repo checked out:
 tailscale ssh pollen@reachy-mini "cd ~/clawbody && git pull --ff-only clawson main"
+
+# main service (transient — watcher will start/stop it):
 tailscale ssh pollen@reachy-mini "sudo bash -s" < deploy/install-systemd.sh
-tailscale ssh pollen@reachy-mini "sudo systemctl start clawson"
+
+# watcher (always-on; owns clawson lifecycle based on host presence):
+tailscale ssh pollen@reachy-mini "sudo bash -s" < deploy/install-watcher.sh
+tailscale ssh pollen@reachy-mini "sudo systemctl start clawson-watcher"
 ```
+
+The watcher will start clawson within ~10 s if the desk PC is reachable.
 
 Verify:
 
@@ -101,11 +118,11 @@ Within ~10 s the widget at http://reachy-mini:7860 should show
 
 ## How it behaves
 
-| State                | OpenAI realtime  | Pollers (GitHub, Vercel, Todoist, Calendar) | Sleep pose |
-|----------------------|------------------|---------------------------------------------|------------|
-| desk PC online       | active           | active                                      | no         |
-| desk PC offline      | paused (no auto-LLM, no say()) | active — events queue silently | yes        |
-| desk PC reappears    | resumed          | unchanged                                   | wake animation |
+| State                | clawson process | OpenAI realtime | Pollers | Robot pose |
+|----------------------|-----------------|-----------------|---------|------------|
+| desk PC online       | running         | active          | active  | normal     |
+| desk PC offline ≥60s | stopped         | n/a             | n/a     | SDK off-pose (head bowed, antennas back) |
+| desk PC reappears    | restarted       | reconnects      | resume  | wake animation |
 
 Notes:
 - When paused, the mic still listens. Voice commands like "wake up",

@@ -302,6 +302,7 @@ class ClawBodyCore:
         
         # State
         self._stop_event = asyncio.Event()
+        self._shutting_down: bool = False
         self._tasks: list[asyncio.Task] = []
 
         # Clawson config drives standup time, active hours, GitHub auth.
@@ -474,32 +475,19 @@ class ClawBodyCore:
         # already set up by this point).
         from reachy_mini_openclaw.host_presence import HostPresenceMonitor
 
+        # Host presence callbacks are informational only — the
+        # clawson-watcher.service runs as a separate systemd unit and
+        # owns the lifecycle. When the desk PC is offline >GRACE_S the
+        # watcher sends SIGTERM to this process, which triggers
+        # _graceful_shutdown → OffPoseMove → exit. When it's back, the
+        # watcher starts us again. We only log here so the widget
+        # status pill shows the right state during the brief window
+        # between detection and SIGTERM.
         async def _on_host_offline() -> None:
-            logger.info("host offline: pausing realtime + entering sleep pose")
-            try:
-                await self.handler.cancel_speaking()
-            except Exception as e:
-                logger.debug("host offline: cancel_speaking failed: %s", e)
-            try:
-                self.handler.set_paused(True)
-            except Exception as e:
-                logger.debug("host offline: handler.set_paused failed: %s", e)
-            try:
-                await self.sleep_animator.enter_sleep(reason="host offline")
-            except Exception as e:
-                logger.debug("host offline: enter_sleep failed: %s", e)
+            logger.info("host offline detected; expecting watcher to stop us")
 
         async def _on_host_online() -> None:
-            logger.info("host online: resuming realtime + waking")
-            try:
-                self.handler.set_paused(False)
-            except Exception as e:
-                logger.debug("host online: handler.set_paused failed: %s", e)
-            try:
-                await self.sleep_animator.exit_sleep(reason="host online")
-            except Exception as e:
-                logger.debug("host online: exit_sleep failed: %s", e)
-            # Best-effort bridge reconnect; bridge has its own backoff.
+            logger.info("host online detected")
             if self.openclaw_bridge is not None:
                 try:
                     if not self.openclaw_bridge.is_connected:
@@ -1047,7 +1035,28 @@ class ClawBodyCore:
         time.sleep(1)  # Let pipelines initialize
         
         logger.info("Ready! Speak to me...")
-        
+
+        # Install SIGTERM/SIGINT handlers so we can play the SDK's
+        # canonical off-pose move before exiting. systemd sends SIGTERM
+        # on `systemctl stop clawson`; the watcher service uses that
+        # path on host-offline. Without this hook the process would
+        # exit mid-pose and leave the head wherever face-tracking last
+        # commanded it.
+        import signal as _signal
+        loop = asyncio.get_running_loop()
+        for sig in (_signal.SIGTERM, _signal.SIGINT):
+            try:
+                loop.add_signal_handler(
+                    sig,
+                    lambda s=sig: asyncio.create_task(
+                        self._graceful_shutdown(s.name)
+                    ),
+                )
+            except NotImplementedError:
+                # Some platforms (Windows in non-asyncio contexts) lack
+                # signal handlers — skip; KeyboardInterrupt path remains.
+                pass
+
         # Start OpenAI handler in background
         handler_task = asyncio.create_task(self.handler.start_up(), name="openai-handler")
         
@@ -1127,6 +1136,48 @@ class ClawBodyCore:
         except asyncio.CancelledError:
             logger.info("Tasks cancelled")
             
+    async def _graceful_shutdown(self, signal_name: str = "?") -> None:
+        """Handle SIGTERM/SIGINT: bow head to the SDK's off-pose, wait
+        for the move to play out, then signal task exit. systemd's
+        TimeoutStopSec=15 s gives us plenty of buffer (the move itself
+        is 2 s plus 0.5 s settle).
+
+        Idempotent — repeated signals during shutdown are no-ops.
+        """
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        logger.info("graceful shutdown requested via %s", signal_name)
+        try:
+            from reachy_mini_openclaw.gestures.sleep import OffPoseMove
+            self.movement_manager.clear_move_queue()
+            pose = self.movement_manager.state.last_primary_pose
+            if pose is not None:
+                head, ant, _yaw = pose
+                self.movement_manager.queue_move(
+                    OffPoseMove(start_pose=head, start_antennas=ant)
+                )
+            else:
+                self.movement_manager.queue_move(OffPoseMove())
+            logger.info("graceful shutdown: off-pose queued")
+        except Exception as e:
+            logger.warning("graceful shutdown: off-pose queue failed: %s", e)
+        # Cancel any in-flight TTS so the speaker isn't talking while we
+        # bow out. cancel_speaking is best-effort.
+        try:
+            await self.handler.cancel_speaking()
+        except Exception as e:
+            logger.debug("graceful shutdown: cancel_speaking failed: %s", e)
+        # Block long enough for OffPoseMove (2.0 s) plus a small settle
+        # so the joints actually arrive at the off pose. Total < 3 s,
+        # well inside systemd's 15 s stop timeout.
+        await asyncio.sleep(2.7)
+        logger.info("graceful shutdown: signaling task exit")
+        self._stop_event.set()
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+
     def stop(self) -> None:
         """Stop everything."""
         logger.info("Stopping...")
