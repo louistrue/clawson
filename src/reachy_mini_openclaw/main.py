@@ -205,6 +205,7 @@ class ClawBodyCore:
             make_imu_reader,
         )
         from reachy_mini_openclaw.focus.companion import CompanionPresence
+        from reachy_mini_openclaw.focus.sleep_animator import SleepAnimator
         from reachy_mini_openclaw.mcp_clients.github import GitHubClient
         from reachy_mini_openclaw.clawson_config import load_clawson_config
         
@@ -345,6 +346,15 @@ class ClawBodyCore:
             except Exception as e:
                 logger.debug("say bridge failed: %s", e)
 
+        # Sleep animator — queued sleep / hold / wake animations + face
+        # tracking toggle. Single source of truth shared between the
+        # FocusController on_change hook (mode → SNOOZED) and the
+        # CompanionPresence absence loop (no face for 5 min).
+        self.sleep_animator = SleepAnimator(
+            movement_manager=self.movement_manager,
+            camera_worker=self.camera_worker,
+        )
+
         # Clawson focus controller — antenna input → mode state machine.
         async def _announce_focus(message: str) -> None:
             logger.info("[focus] %s", message)
@@ -352,6 +362,11 @@ class ClawBodyCore:
 
         async def _on_focus_change(new_mode, previous_mode) -> None:
             logger.info("[focus] mode %s → %s", previous_mode.value, new_mode.value)
+            from reachy_mini_openclaw.focus.modes import FocusMode as _FM
+            if new_mode == _FM.SNOOZED and previous_mode != _FM.SNOOZED:
+                await self.sleep_animator.enter_sleep(reason="snoozed")
+            elif new_mode != _FM.SNOOZED and previous_mode == _FM.SNOOZED:
+                await self.sleep_animator.exit_sleep(reason="unsnoozed")
 
         # The two cross-references (rollup → dispatcher, standup → standup_runner)
         # are wired after both objects exist; we close over self for the lookup.
@@ -742,6 +757,7 @@ class ClawBodyCore:
             focus_settings=self.clawson_cfg.focus,
             wiggle_factory=_make_wiggle,
             on_say=_say,
+            sleep_animator=self.sleep_animator,
         )
 
         # Head-gesture detector (nod = yes, shake = no).

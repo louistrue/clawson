@@ -58,12 +58,14 @@ class CompanionPresence:
         *,
         wiggle_factory: Optional[Callable[[str], Any]] = None,
         on_say: Optional[Callable[[str], Awaitable[None]]] = None,
+        sleep_animator: Optional[Any] = None,
     ) -> None:
         self._camera = camera_worker
         self._mm = movement_manager
         self._focus = focus_settings
         self._wiggle_factory = wiggle_factory
         self._say = on_say
+        self._sleep_animator = sleep_animator
         self._state: str = "awake"
         self._last_face_seen: float = _time.monotonic()
         # Hysteresis: only wake if the absence actually crossed a threshold.
@@ -132,7 +134,14 @@ class CompanionPresence:
         if self._state == "sleeping":
             return
         self._state = "sleeping"
-        logger.info("companion: sleeping — disabling face tracking")
+        logger.info("companion: sleeping — entering sleep pose")
+        if self._sleep_animator is not None:
+            try:
+                await self._sleep_animator.enter_sleep(reason="absence")
+                return
+            except Exception as e:
+                logger.debug("companion: sleep_animator enter failed: %s", e)
+        # Fallback: at least pause tracking so head doesn't drift.
         try:
             if hasattr(self._camera, "set_head_tracking_enabled"):
                 self._camera.set_head_tracking_enabled(False)
@@ -146,13 +155,19 @@ class CompanionPresence:
         self._state = "awake"
         self._was_absent_long = False
         logger.info("companion: waking (was %s)", prev)
-        try:
-            if hasattr(self._camera, "set_head_tracking_enabled"):
-                self._camera.set_head_tracking_enabled(True)
-            else:
-                self._camera.is_head_tracking_enabled = True
-        except Exception as e:
-            logger.debug("companion: tracking enable failed: %s", e)
+        if self._sleep_animator is not None:
+            try:
+                await self._sleep_animator.exit_sleep(reason="face return")
+            except Exception as e:
+                logger.debug("companion: sleep_animator exit failed: %s", e)
+        else:
+            try:
+                if hasattr(self._camera, "set_head_tracking_enabled"):
+                    self._camera.set_head_tracking_enabled(True)
+                else:
+                    self._camera.is_head_tracking_enabled = True
+            except Exception as e:
+                logger.debug("companion: tracking enable failed: %s", e)
         if from_long_absence:
             await self._wiggle_hello("hey, there you are")
 
