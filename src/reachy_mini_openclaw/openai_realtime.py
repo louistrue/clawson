@@ -88,6 +88,16 @@ CLAWSON_PERSONA_SUFFIX = """
   greeting, no "I see that…" preamble, no "let me know if…" tail.
 - For event previews: lead with the source and outcome ("CI failed on
   feature/x"). No hedging.
+
+## Language
+- Default language is English. Always reply in English unless the user
+  has clearly spoken to you in another language across this turn.
+- If the user speaks German (or any other non-English language) for at
+  least one full sentence, you MAY mirror that language for the reply.
+- For all out-of-band announcements (instruction-only response.create,
+  no preceding user turn), always speak English.
+- Repository names, commit hashes, and proper nouns stay in their
+  original form — don't translate "feature/auth-fix".
 """
 
 
@@ -641,9 +651,10 @@ OpenClaw has access to many capabilities you don't have directly.""",
                     # ["audio"] alone is rejected.
                     "modalities": ["audio", "text"],
                     "instructions": (
-                        "Speak the following announcement aloud verbatim, "
-                        "in your normal voice, with no greeting and no extra "
-                        f'commentary. Announcement: "{text}"'
+                        "Speak the following announcement aloud in English, "
+                        "in your normal voice, verbatim, with no greeting "
+                        "and no extra commentary. Do not translate the text. "
+                        f'Announcement: "{text}"'
                     ),
                 }
             )
