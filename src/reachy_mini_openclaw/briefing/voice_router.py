@@ -97,20 +97,24 @@ class VoiceCommandRouter:
         self._dispatcher = event_dispatcher
         self._focus_settings = focus_settings
 
-    async def __call__(self, transcript: str) -> None:
+    async def __call__(self, transcript: str) -> bool:
+        """Return True if the transcript matched a command (and was handled),
+        False otherwise. The realtime handler uses this to decide whether
+        to fire the LLM auto-response."""
         if not transcript:
-            return
+            return False
         try:
-            await self._dispatch(transcript)
+            return await self._dispatch(transcript)
         except Exception as e:
             logger.exception("voice command router failed: %s", e)
+            return False
 
-    async def _dispatch(self, t: str) -> None:
+    async def _dispatch(self, t: str) -> bool:
         # Snooze cancel must beat plain snooze regex.
         if _UNSNOOZE.search(t):
             logger.info("voice: unsnooze")
             await self._focus.request_unsnooze()
-            return
+            return True
 
         if _SNOOZE_4H.search(t):
             logger.info("voice: snooze 4h")
@@ -127,7 +131,7 @@ class VoiceCommandRouter:
         if _SNOOZE_BARE.search(t):
             logger.info("voice: snooze bare → 15m")
             await self._focus.request_snooze(timedelta(minutes=15), label="fifteen minutes")
-            return
+            return True
 
         # Mode commands — order matters: 'deep' shouldn't fire if the
         # transcript was 'normal' (it isn't, but defensively the more-
@@ -146,12 +150,12 @@ class VoiceCommandRouter:
             logger.info("voice: mode normal")
             from ..focus.modes import FocusMode
             await self._focus.request_set_mode(FocusMode.NORMAL)
-            return
+            return True
 
         if _STANDUP.search(t):
             logger.info("voice: standup")
             await self._standup.run_now()
-            return
+            return True
 
         if _QUIET.search(t):
             logger.info("voice: quiet")
@@ -159,7 +163,7 @@ class VoiceCommandRouter:
                 await self._handler.cancel_speaking()
             except Exception as e:
                 logger.debug("cancel_speaking failed: %s", e)
-            return
+            return True
 
         if _REPEAT.search(t):
             logger.info("voice: repeat")
@@ -167,23 +171,23 @@ class VoiceCommandRouter:
                 await self._handler.repeat_last_say()
             except Exception as e:
                 logger.debug("repeat_last_say failed: %s", e)
-            return
+            return True
 
         if _STATUS.search(t):
             logger.info("voice: status")
             await self._speak_status()
-            return
+            return True
 
         if _WHAT_MODE.search(t):
             logger.info("voice: what mode")
             if self._say is not None:
                 await self._say(f"Mode is {self._focus.mode.value}.")
-            return
+            return True
 
         if _WHAT_TIME.search(t):
             logger.info("voice: what time")
             await self._speak_time()
-            return
+            return True
 
         if _CLEAR_QUEUE.search(t):
             logger.info("voice: clear queue")
@@ -195,7 +199,7 @@ class VoiceCommandRouter:
                     f"Cleared {cleared} queued events."
                     if cleared else "Queue is already empty."
                 )
-            return
+            return True
 
         if _RESTART.search(t):
             logger.info("voice: restart")
@@ -204,9 +208,10 @@ class VoiceCommandRouter:
             # Schedule the exec on the next tick so the say() can flush.
             import asyncio
             asyncio.get_event_loop().call_later(1.0, _restart_self)
-            return
+            return True
 
-        # No match → let the LLM handle the turn normally.
+        # No match → return False so handler fires LLM response.create.
+        return False
 
     async def _speak_status(self) -> None:
         if self._say is None:

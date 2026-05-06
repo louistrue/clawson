@@ -304,6 +304,12 @@ OpenClaw has access to many capabilities you don't have directly.""",
                         "threshold": 0.5,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 600,
+                        # Don't auto-create a response on speech_stopped.
+                        # We fire response.create manually only for
+                        # transcripts that aren't Clawson voice commands —
+                        # so 'snooze fifteen' doesn't get an LLM reply
+                        # racing against our action.
+                        "create_response": False,
                     },
                     "tools": tools,
                     "tool_choice": "auto",
@@ -376,11 +382,24 @@ OpenClaw has access to many capabilities you don't have directly.""",
                 await self.output_queue.put(
                     AdditionalOutputs({"role": "user", "content": transcript})
                 )
+                # Voice router gets first crack — if it returns True, the
+                # transcript was a Clawson command and we DON'T fire an LLM
+                # response (the action handles its own audio ack via say()).
+                # If it returns False/None, fire response.create so the LLM
+                # answers conversationally. turn_detection.create_response
+                # is off so this is the only path to an LLM reply.
+                handled = False
                 if self.on_user_transcript is not None:
                     try:
-                        await self.on_user_transcript(transcript)
+                        result = await self.on_user_transcript(transcript)
+                        handled = bool(result)
                     except Exception as e:
                         logger.debug("on_user_transcript hook failed: %s", e)
+                if not handled and self.connection is not None:
+                    try:
+                        await self.connection.response.create()
+                    except Exception as e:
+                        logger.debug("LLM response.create failed: %s", e)
             
         # Response started - robot is about to speak
         if event_type == "response.created":
