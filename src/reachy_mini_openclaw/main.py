@@ -170,6 +170,11 @@ class ClawBodyCore:
             FocusController,
             make_robot_antenna_reader,
         )
+        from reachy_mini_openclaw.briefing import EventBus
+        from reachy_mini_openclaw.briefing.dispatcher import EventDispatcher
+        from reachy_mini_openclaw.briefing.poller import GitHubPoller
+        from reachy_mini_openclaw.mcp_clients.github import GitHubClient
+        from reachy_mini_openclaw.clawson_config import load_clawson_config
         
         self.gateway_url = gateway_url
         self._external_stop_event = external_stop_event
@@ -278,6 +283,26 @@ class ClawBodyCore:
             on_announce=_announce_focus,
             on_change=_on_focus_change,
         )
+
+        # Clawson event pipeline: bus + dispatcher (always on),
+        # GitHub poller (only if a token is configured).
+        self.clawson_cfg = load_clawson_config()
+        self.event_bus = EventBus()
+        self.event_dispatcher = EventDispatcher(
+            self.event_bus,
+            focus_mode_provider=lambda: self.focus_controller.mode,
+            movement_manager=self.movement_manager,
+        )
+        self.github_client: Optional[Any] = None
+        self.github_poller: Optional[Any] = None
+        if self.clawson_cfg.github_enabled:
+            self.github_client = GitHubClient(self.clawson_cfg.github_token)
+            self.github_poller = GitHubPoller(self.github_client, self.event_bus)
+            logger.info("Clawson: GitHub poller armed")
+        else:
+            logger.info(
+                "Clawson: GitHub disabled (no token in ~/.config/clawson/config.toml or $GITHUB_TOKEN)"
+            )
         
     def _initialize_vision_manager(self) -> Optional[Any]:
         """Initialize local vision processor (SmolVLM2).
@@ -466,7 +491,8 @@ class ClawBodyCore:
         # Start OpenAI handler in background
         handler_task = asyncio.create_task(self.handler.start_up(), name="openai-handler")
         
-        # Start audio loops + focus controller (antenna input → state machine).
+        # Start audio loops + focus controller (antenna input → state machine)
+        # + Clawson event pipeline (bus dispatcher always; GitHub poller if armed).
         self._tasks = [
             handler_task,
             asyncio.create_task(self.record_loop(), name="record-loop"),
@@ -474,7 +500,16 @@ class ClawBodyCore:
             asyncio.create_task(
                 self.focus_controller.run(self._should_stop), name="focus-controller"
             ),
+            asyncio.create_task(
+                self.event_dispatcher.run(self._should_stop), name="event-dispatcher"
+            ),
         ]
+        if self.github_poller is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self.github_poller.run(self._should_stop), name="github-poller"
+                )
+            )
         
         try:
             await asyncio.gather(*self._tasks)
@@ -494,6 +529,15 @@ class ClawBodyCore:
         # Stop movement system
         self.head_wobbler.stop()
         self.movement_manager.stop()
+
+        # Close Clawson HTTP clients.
+        if self.github_client is not None:
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self.github_client.aclose())
+                loop.close()
+            except Exception as e:
+                logger.warning("github client close failed: %s", e)
         
         # Stop vision manager
         if self.vision_manager is not None:
