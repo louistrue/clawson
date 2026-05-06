@@ -166,6 +166,10 @@ class ClawBodyCore:
         from reachy_mini_openclaw.openclaw_bridge import OpenClawBridge
         from reachy_mini_openclaw.tools.core_tools import ToolDependencies
         from reachy_mini_openclaw.openai_realtime import OpenAIRealtimeHandler
+        from reachy_mini_openclaw.focus import (
+            FocusController,
+            make_robot_antenna_reader,
+        )
         
         self.gateway_url = gateway_url
         self._external_stop_event = external_stop_event
@@ -261,6 +265,19 @@ class ClawBodyCore:
         # State
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
+
+        # Clawson focus controller — antenna input → mode state machine.
+        async def _announce_focus(message: str) -> None:
+            logger.info("[focus] %s", message)
+
+        async def _on_focus_change(new_mode, previous_mode) -> None:
+            logger.info("[focus] mode %s → %s", previous_mode.value, new_mode.value)
+
+        self.focus_controller = FocusController(
+            position_reader=make_robot_antenna_reader(self.robot),
+            on_announce=_announce_focus,
+            on_change=_on_focus_change,
+        )
         
     def _initialize_vision_manager(self) -> Optional[Any]:
         """Initialize local vision processor (SmolVLM2).
@@ -449,11 +466,14 @@ class ClawBodyCore:
         # Start OpenAI handler in background
         handler_task = asyncio.create_task(self.handler.start_up(), name="openai-handler")
         
-        # Start audio loops
+        # Start audio loops + focus controller (antenna input → state machine).
         self._tasks = [
             handler_task,
             asyncio.create_task(self.record_loop(), name="record-loop"),
             asyncio.create_task(self.play_loop(), name="play-loop"),
+            asyncio.create_task(
+                self.focus_controller.run(self._should_stop), name="focus-controller"
+            ),
         ]
         
         try:
