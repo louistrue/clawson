@@ -637,7 +637,9 @@ OpenClaw has access to many capabilities you don't have directly.""",
         try:
             await self.connection.response.create(
                 response={
-                    "modalities": ["audio"],
+                    # OpenAI Realtime requires ["text"] or ["audio","text"];
+                    # ["audio"] alone is rejected.
+                    "modalities": ["audio", "text"],
                     "instructions": (
                         "Speak the following announcement aloud verbatim, "
                         "in your normal voice, with no greeting and no extra "

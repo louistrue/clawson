@@ -101,11 +101,15 @@ async def test_face_detect_arms_only_once_per_day(monkeypatch):
     runner = _FakeStandup()
     f = _focus_settings_weekday()
     cam = _FakeCamera(last_seen=_time.monotonic())  # face right now
+    # 24h grace makes the trigger window cover the whole day so this test is
+    # not wall-clock-dependent.
+    from datetime import timedelta
     trig = FaceDetectStandupTrigger(
         camera_worker=cam,
         standup_runner=runner,
         focus_settings=f,
-        window_start=time(0, 0),  # window always open for the test
+        window_start=time(0, 0),
+        post_window_grace=timedelta(hours=24),
     )
     await trig._tick()
     await trig._tick()

@@ -76,14 +76,14 @@ class PresenceAutoSnooze:
         if not self._active_hours_check(self._focus_settings, now):
             return
         last_seen = getattr(self._camera, "last_face_detected_time", None)
-        face_recent = (
-            last_seen is not None
-            and (_time.monotonic() - float(last_seen)) <= self._face_freshness_s
-        )
-        face_absent_long = (
-            last_seen is None
-            or (_time.monotonic() - float(last_seen)) >= self._absence_threshold.total_seconds()
-        )
+        # If a face has never been detected (camera not calibrated yet, user
+        # working out-of-frame, etc.) we don't pretend the user is absent —
+        # auto-snooze should only fire after we've HAD a face and lost it.
+        if last_seen is None:
+            return
+        elapsed = _time.monotonic() - float(last_seen)
+        face_recent = elapsed <= self._face_freshness_s
+        face_absent_long = elapsed >= self._absence_threshold.total_seconds()
         mode = self._focus.mode
 
         # Auto-snooze when away during active hours.
