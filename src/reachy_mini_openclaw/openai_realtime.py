@@ -74,6 +74,23 @@ FALLBACK_IDENTITY = """You are Clawson, the OpenClaw AI assistant. You're a frie
 You speak as yourself - not as "an AI assistant" but as Clawson, with your own personality and warmth."""
 
 
+# Clawson persona suffix — `concise_warm` per plan.md.
+# Appended to system instructions after the OpenClaw context, so it doesn't
+# replace the upstream identity but tightens the spoken style.
+CLAWSON_PERSONA_SUFFIX = """
+## Voice Style — concise_warm
+- Short sentences. One thought per breath.
+- Dry humour when it lands; never forced.
+- Small-robot energy: precise, slightly understated, present.
+- No emoji in spoken responses.
+- When delivering an out-of-band announcement (snooze confirms, event
+  summaries, the morning standup), say only the essential line — no
+  greeting, no "I see that…" preamble, no "let me know if…" tail.
+- For event previews: lead with the source and outcome ("CI failed on
+  feature/x"). No hedging.
+"""
+
+
 class OpenAIRealtimeHandler(AsyncStreamHandler):
     """Handler for OpenAI Realtime API embodying the OpenClaw agent.
     
@@ -273,15 +290,16 @@ OpenClaw has access to many capabilities you don't have directly.""",
         if agent_context:
             self._agent_context = agent_context
             logger.info("Using OpenClaw agent context (%d chars)", len(agent_context))
-            # Combine OpenClaw's identity/context with robot body instructions
             return f"""{agent_context}
 
-{ROBOT_BODY_INSTRUCTIONS}"""
+{ROBOT_BODY_INSTRUCTIONS}
+{CLAWSON_PERSONA_SUFFIX}"""
         else:
             logger.warning("Could not fetch OpenClaw context, using fallback identity")
             return f"""{FALLBACK_IDENTITY}
 
-{ROBOT_BODY_INSTRUCTIONS}"""
+{ROBOT_BODY_INSTRUCTIONS}
+{CLAWSON_PERSONA_SUFFIX}"""
                 
     async def _handle_event(self, event: Any) -> None:
         """Handle an event from the OpenAI Realtime API."""

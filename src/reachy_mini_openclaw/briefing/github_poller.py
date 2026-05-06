@@ -5,6 +5,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import httpx
+
 from ..mcp_clients.github import (
     GitHubClient,
     Notification,
@@ -145,6 +147,7 @@ class GitHubPoller:
         # Backoffs are per-loop so a runs outage doesn't slow notifications.
         self._notif_backoff = Backoff()
         self._runs_backoff = Backoff()
+        self._auth_failed_announced = False
 
     async def warm_up(self) -> None:
         """Run once before the loops start: identify and pull initial repos."""
@@ -224,6 +227,7 @@ class GitHubPoller:
                     "github notifications poll failed (attempt %d, backing off %.0fs): %s",
                     self._notif_backoff.fails, sleep_for, e,
                 )
+                await self._maybe_announce_auth_failure(e)
             await asyncio.sleep(sleep_for)
 
     # ------------------------------------------------------------------
@@ -243,6 +247,7 @@ class GitHubPoller:
                 except Exception as e:
                     any_failure = True
                     logger.debug("github runs poll failed for %s: %s", repo.full_name, e)
+                    await self._maybe_announce_auth_failure(e)
                     continue
                 seen = self._known_run_ids.setdefault(repo.full_name, set())
                 for run in runs:
@@ -284,3 +289,23 @@ class GitHubPoller:
         if not self._persist:
             return
         save_github_state(self._filter_state, self._notifications_since)
+
+    async def _maybe_announce_auth_failure(self, exc: BaseException) -> None:
+        """Emit one CRITICAL auth_failed event if the error is a 401."""
+        if self._auth_failed_announced:
+            return
+        if not isinstance(exc, httpx.HTTPStatusError):
+            return
+        if exc.response.status_code != 401:
+            return
+        self._auth_failed_announced = True
+        await self._bus.publish(Event(
+            source="github",
+            kind="auth_failed",
+            summary="GitHub token rejected — update ~/.config/clawson/config.toml",
+            link="https://github.com/settings/tokens",
+            ts=datetime.now(timezone.utc),
+            fingerprint="github:auth_failed",
+            severity=EventSeverity.CRITICAL,
+            raw={"repo": None, "branch": None, "status": 401},
+        ))

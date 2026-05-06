@@ -118,12 +118,12 @@ async def test_poller_emits_both_when_concurrent():
 
 @pytest.mark.asyncio
 async def test_poller_emits_single_side_when_alone():
-    """A solo press (held long enough) emits a per-side tap; no 'both'."""
+    """A solo press flushes as 'tap' after the double-tap window expires."""
     seen: List[AntennaEvent] = []
-    # 12 PRESS samples at 10ms each ⇒ ~120ms hold, comfortably above MIN_PRESS_S.
+    # 12 PRESS samples then idle samples that span the double-gap window.
     script = [(0.0, 0.0)]
     script.extend((PRESS_MAG, 0.0) for _ in range(12))
-    script.append((0.0, 0.0))
+    script.extend((0.0, 0.0) for _ in range(80))  # ~800ms idle > DOUBLE_GAP_S
     idx = {"i": 0}
 
     def reader():
@@ -144,10 +144,53 @@ async def test_poller_emits_single_side_when_alone():
         return idx["i"] > len(script) + 5 or stopped["v"]
 
     task = asyncio.create_task(poller.run_until(should_stop))
-    await asyncio.sleep(0.30)
+    await asyncio.sleep(1.20)
     stopped["v"] = True
     await task
 
     kinds = [(e.side, e.kind) for e in seen]
     assert ("left", "tap") in kinds
     assert all(s != "both" for s, _ in kinds)
+
+
+@pytest.mark.asyncio
+async def test_poller_collapses_two_quick_taps_into_double():
+    """Two taps within DOUBLE_GAP_S on the same side fire 'double', not two taps."""
+    seen: List[AntennaEvent] = []
+    script = [(0.0, 0.0)]
+    # First tap
+    script.extend((PRESS_MAG, 0.0) for _ in range(10))
+    script.append((0.0, 0.0))
+    # ~150ms gap (well under DOUBLE_GAP_S=400ms)
+    script.extend((0.0, 0.0) for _ in range(15))
+    # Second tap
+    script.extend((PRESS_MAG, 0.0) for _ in range(10))
+    script.extend((0.0, 0.0) for _ in range(80))  # idle long enough to flush
+    idx = {"i": 0}
+
+    def reader():
+        i = idx["i"]
+        idx["i"] += 1
+        if i < len(script):
+            return script[i]
+        return None
+
+    async def on_event(e: AntennaEvent):
+        seen.append(e)
+
+    poller = AntennaPoller(read_positions=reader, on_event=on_event, poll_interval_s=0.010)
+
+    stopped = {"v": False}
+
+    def should_stop():
+        return idx["i"] > len(script) + 5 or stopped["v"]
+
+    task = asyncio.create_task(poller.run_until(should_stop))
+    await asyncio.sleep(1.50)
+    stopped["v"] = True
+    await task
+
+    kinds = [(e.side, e.kind) for e in seen]
+    assert ("left", "double") in kinds
+    # No stale single tap from the buffer.
+    assert kinds.count(("left", "tap")) == 0

@@ -178,8 +178,11 @@ class ClawBodyCore:
         from reachy_mini_openclaw.widget import WidgetServer
         from reachy_mini_openclaw.briefing.standup import (
             StandupRunner,
+            format_rollup,
             is_within_active_hours,
         )
+        from reachy_mini_openclaw.briefing.mutes import load_mutes
+        from reachy_mini_openclaw.briefing.cost_tracker import CostTracker
         from reachy_mini_openclaw.mcp_clients.github import GitHubClient
         from reachy_mini_openclaw.clawson_config import load_clawson_config
         
@@ -281,8 +284,17 @@ class ClawBodyCore:
         # Clawson config drives standup time, active hours, GitHub auth.
         self.clawson_cfg = load_clawson_config()
 
+        # Daily voice budget — protects against runaway poller bugs.
+        self.cost_tracker = CostTracker()
+
         # Spoken announcement bridge — wired through OpenAIRealtimeHandler.say().
         async def _say(message: str) -> None:
+            if not self.cost_tracker.tick():
+                logger.warning(
+                    "daily say cap reached (%d), skipping: %s",
+                    self.cost_tracker.daily_max, message[:80],
+                )
+                return
             try:
                 await self.handler.say(message)
             except Exception as e:
@@ -296,10 +308,21 @@ class ClawBodyCore:
         async def _on_focus_change(new_mode, previous_mode) -> None:
             logger.info("[focus] mode %s → %s", previous_mode.value, new_mode.value)
 
+        # The two cross-references (rollup → dispatcher, standup → standup_runner)
+        # are wired after both objects exist; we close over self for the lookup.
+        async def _on_rollup_request() -> None:
+            queued = self.event_dispatcher.queued_events
+            await _say(format_rollup(queued))
+
+        async def _on_standup_request() -> None:
+            await self.standup_runner.run_now()
+
         self.focus_controller = FocusController(
             position_reader=make_robot_antenna_reader(self.robot),
             on_announce=_announce_focus,
             on_change=_on_focus_change,
+            on_rollup_request=_on_rollup_request,
+            on_standup_request=_on_standup_request,
         )
 
         # Event-pipeline announce hook (Phase 3): summary spoken when
@@ -317,12 +340,15 @@ class ClawBodyCore:
             return is_within_active_hours(self.clawson_cfg.focus, _dt.now(_tz.utc))
 
         self.event_bus = EventBus()
+        self.mute_list = load_mutes()
         self.event_dispatcher = EventDispatcher(
             self.event_bus,
             focus_mode_provider=lambda: self.focus_controller.mode,
             movement_manager=self.movement_manager,
             on_announce=_announce_event,
             active_hours_provider=_active_hours_now,
+            audio_sink=self.robot.media,
+            mute_list=self.mute_list,
         )
 
         # Morning standup. Drains queued events from the dispatcher into a
@@ -344,6 +370,7 @@ class ClawBodyCore:
                 self.clawson_cfg.focus,
                 host=os.getenv("CLAWSON_WIDGET_HOST", "127.0.0.1"),
                 port=int(os.getenv("CLAWSON_WIDGET_PORT", "7860")),
+                mute_list=self.mute_list,
             )
         self.github_client: Optional[Any] = None
         self.github_poller: Optional[Any] = None

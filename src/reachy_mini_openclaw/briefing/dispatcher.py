@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Deque, Optional
 
 from ..focus.modes import FocusMode
-from ..gestures import gesture_for_event
+from ..gestures import cue_for_event, gesture_for_event
 from .events import Event, EventBus, EventSeverity
+from .mutes import MuteList
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,16 @@ class EventDispatcher:
         *,
         on_announce: Optional[Callable[[Event], Awaitable[None]]] = None,
         active_hours_provider: Optional[Callable[[], bool]] = None,
+        audio_sink: Optional[Any] = None,            # robot.media-shaped
+        mute_list: Optional[MuteList] = None,
     ) -> None:
         self._bus = bus
         self._focus_mode_provider = focus_mode_provider
         self._movement_manager = movement_manager
         self._on_announce = on_announce
         self._active_hours_provider = active_hours_provider
+        self._audio_sink = audio_sink
+        self._mute_list = mute_list or MuteList()
         self._recent: Deque[tuple[str, datetime]] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._queued: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._recent_events: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
@@ -109,6 +114,10 @@ class EventDispatcher:
 
     def _decide(self, event: Event, mode: FocusMode) -> str:
         critical = event.severity == EventSeverity.CRITICAL
+        # Mute check first — muted events still get queued for the rollup
+        # / widget but never gesture or announce.
+        if not critical and self._mute_list.is_muted(event):
+            return "queue"
         # Active-hours gate: outside the configured window we silence
         # non-critical events regardless of focus mode (the morning
         # standup at 07:30 is a separate path that doesn't go through
@@ -144,6 +153,21 @@ class EventDispatcher:
             move = gesture_for_event(event.kind, head, antennas)
             if move is None:
                 return
+            # Audio cue first — short blip arrives ~50ms before the gesture
+            # peaks, helping it read as "this gesture means X".
+            self._play_cue(event.kind)
             self._movement_manager.queue_move(move)
         except Exception as e:
             logger.warning("dispatcher: queue_move failed for %s: %s", event.fingerprint, e)
+
+    def _play_cue(self, kind: str) -> None:
+        if self._audio_sink is None:
+            return
+        try:
+            sr = int(self._audio_sink.get_output_audio_samplerate())
+            audio = cue_for_event(kind, sr)
+            if audio is None:
+                return
+            self._audio_sink.push_audio_sample(audio)
+        except Exception as e:
+            logger.debug("dispatcher: audio cue push failed: %s", e)

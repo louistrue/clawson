@@ -12,6 +12,7 @@ import uvicorn
 
 from ..briefing.dispatcher import EventDispatcher
 from ..briefing.events import Event
+from ..briefing.mutes import MuteList, save_mutes
 from ..briefing.standup import StandupRunner, is_within_active_hours
 from ..clawson_config import FocusSettings
 from ..focus.controller import FocusController
@@ -50,11 +51,13 @@ class WidgetServer:
         *,
         host: str = "127.0.0.1",
         port: int = 7860,
+        mute_list: Optional[MuteList] = None,
     ) -> None:
         self._focus = focus_controller
         self._dispatcher = event_dispatcher
         self._standup = standup_runner
         self._focus_settings = focus_settings
+        self._mute_list = mute_list
         self._host = host
         self._port = port
         self._app = FastAPI(title="Clawson Widget", docs_url=None, redoc_url=None)
@@ -126,6 +129,52 @@ class WidgetServer:
         async def queue_clear() -> JSONResponse:
             drained = self._dispatcher.drain_queued()
             return JSONResponse({"cleared": len(drained)})
+
+        @app.get("/api/mutes")
+        async def mutes_get() -> JSONResponse:
+            if self._mute_list is None:
+                return JSONResponse({"mutes": {}})
+            return JSONResponse({"mutes": self._mute_list.to_dict()})
+
+        @app.post("/api/mutes")
+        async def mutes_add(req: Request) -> JSONResponse:
+            if self._mute_list is None:
+                raise HTTPException(status_code=503, detail="mute list unavailable")
+            body = {}
+            try:
+                body = await req.json()
+            except Exception:
+                pass
+            source = body.get("source")
+            key = body.get("key")
+            if not source or not key:
+                raise HTTPException(status_code=400, detail="source and key required")
+            self._mute_list.add(source, key)
+            try:
+                save_mutes(self._mute_list)
+            except Exception as e:
+                logger.debug("save_mutes failed: %s", e)
+            return JSONResponse({"mutes": self._mute_list.to_dict()})
+
+        @app.delete("/api/mutes")
+        async def mutes_remove(req: Request) -> JSONResponse:
+            if self._mute_list is None:
+                raise HTTPException(status_code=503, detail="mute list unavailable")
+            body = {}
+            try:
+                body = await req.json()
+            except Exception:
+                pass
+            source = body.get("source")
+            key = body.get("key")
+            if not source or not key:
+                raise HTTPException(status_code=400, detail="source and key required")
+            removed = self._mute_list.remove(source, key)
+            try:
+                save_mutes(self._mute_list)
+            except Exception as e:
+                logger.debug("save_mutes failed: %s", e)
+            return JSONResponse({"removed": removed, "mutes": self._mute_list.to_dict()})
 
     async def run(self, should_stop: Callable[[], bool]) -> None:
         config = uvicorn.Config(

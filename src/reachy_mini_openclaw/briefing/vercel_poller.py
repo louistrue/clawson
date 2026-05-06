@@ -5,6 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable, Optional, Set
 
+import httpx
+
 from ..mcp_clients.vercel import Deployment, VercelClient
 from .backoff import Backoff
 from .events import Event, EventBus, EventSeverity
@@ -76,6 +78,26 @@ class VercelPoller:
         self._seen: Set[str] = load_vercel_seen() if persist else set()
         self._warmed = False
         self._backoff = Backoff()
+        self._auth_failed_announced = False
+
+    async def _maybe_announce_auth_failure(self, exc: BaseException) -> None:
+        if self._auth_failed_announced:
+            return
+        if not isinstance(exc, httpx.HTTPStatusError):
+            return
+        if exc.response.status_code != 401:
+            return
+        self._auth_failed_announced = True
+        await self._bus.publish(Event(
+            source="vercel",
+            kind="auth_failed",
+            summary="Vercel token rejected — update ~/.config/clawson/config.toml",
+            link="https://vercel.com/account/tokens",
+            ts=datetime.now(timezone.utc),
+            fingerprint="vercel:auth_failed",
+            severity=EventSeverity.CRITICAL,
+            raw={"project": None, "status": 401},
+        ))
 
     async def warm_up(self) -> None:
         """Snapshot current deployments without emitting Events. We add the
@@ -108,6 +130,7 @@ class VercelPoller:
                     "vercel poll failed (attempt %d, backing off %.0fs): %s",
                     self._backoff.fails, sleep_for, e,
                 )
+                await self._maybe_announce_auth_failure(e)
             new_uids: list[str] = []
             for d in deployments:
                 if d.state not in TERMINAL_STATES:

@@ -12,9 +12,9 @@ from .store import DEFAULT_STATE_PATH, load_state, save_state
 
 logger = logging.getLogger(__name__)
 
-# Snooze durations bound to gestures. Tap = 15m, hold = 4h. The 1h slot
-# is the widget's job (phase 5) and a future antenna double-tap.
+# Snooze durations bound to gestures.
 SNOOZE_TAP = timedelta(minutes=15)
+SNOOZE_DOUBLE = timedelta(hours=1)
 SNOOZE_HOLD = timedelta(hours=4)
 
 # How often to check for snooze expiry when no antenna events fire.
@@ -52,6 +52,7 @@ class FocusController:
         on_change: Optional[Callable[[FocusMode, FocusMode], Awaitable[None]]] = None,
         on_announce: Optional[Callable[[str], Awaitable[None]]] = None,
         on_rollup_request: Optional[Callable[[], Awaitable[None]]] = None,
+        on_standup_request: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         self._state_path = state_path
         self._state: FocusState = load_state(state_path)
@@ -59,6 +60,7 @@ class FocusController:
         self._on_change = on_change
         self._on_announce = on_announce
         self._on_rollup_request = on_rollup_request
+        self._on_standup_request = on_standup_request
 
         if position_reader is not None:
             self._poller = AntennaPoller(
@@ -108,12 +110,18 @@ class FocusController:
             await self.request_cycle()
         elif ev.side == "left" and ev.kind == "tap":
             await self.request_snooze(SNOOZE_TAP, label="fifteen minutes")
+        elif ev.side == "left" and ev.kind == "double":
+            await self.request_snooze(SNOOZE_DOUBLE, label="one hour")
         elif ev.side == "left" and ev.kind == "hold":
             await self.request_snooze(SNOOZE_HOLD, label="four hours")
         elif ev.side == "both" and ev.kind == "tap":
             await self._fire_rollup()
         elif ev.side == "right" and ev.kind == "hold":
-            await self._announce("hold not yet bound")
+            # Right-hold = "trigger standup now" (4th plan trigger).
+            await self._fire_standup()
+        elif ev.side == "right" and ev.kind == "double":
+            # Reserved for future bindings; no-op for v1.
+            await self._announce("right double not yet bound")
 
     # ------------------------------------------------------------------
     # Public action API — used by antenna handler AND the widget.
@@ -181,3 +189,12 @@ class FocusController:
             await self._on_rollup_request()
         except Exception as e:
             logger.exception("on_rollup_request failed: %s", e)
+
+    async def _fire_standup(self) -> None:
+        if self._on_standup_request is None:
+            await self._announce("standup not yet wired")
+            return
+        try:
+            await self._on_standup_request()
+        except Exception as e:
+            logger.exception("on_standup_request failed: %s", e)

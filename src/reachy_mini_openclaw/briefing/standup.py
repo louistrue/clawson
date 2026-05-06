@@ -131,6 +131,12 @@ class StandupRunner:
         return []
 
 
+def format_rollup(events: List[Event]) -> str:
+    """Public alias for the script formatter so the antennas-rollup path
+    (both-tap) and the morning-standup path can share output style."""
+    return _format_script(events)
+
+
 def _format_script(events: List[Event]) -> str:
     """Render queued events into a short spoken rollup."""
     if not events:

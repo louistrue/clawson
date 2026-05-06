@@ -176,6 +176,8 @@ _GESTURE_MAP = {
     # Vercel — distinct gesture per plan: longer droop than CI fail.
     "vercel_deploy_fail":    lambda p, a: HeadDroopMove(p, a, hold=1.6),
     "vercel_deploy_success": lambda p, a: SmallNodMove(p, a),
+    # Auth failure: deep, slow droop. Critical events bypass mode gating.
+    "auth_failed":           lambda p, a: HeadDroopMove(p, a, ease_in=0.5, hold=2.0, ease_out=0.7),
 }
 
 
