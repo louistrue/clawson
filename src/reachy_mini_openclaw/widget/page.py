@@ -132,6 +132,12 @@ PAGE = """<!doctype html>
       <div><code>what mode</code> / <code>what time</code></div>
       <div><code>clear queue</code></div>
       <div><code>restart yourself</code></div>
+      <div><code>open my PRs</code></div>
+      <div><code>what's broken</code></div>
+      <div><code>focus on owner/repo</code></div>
+      <div><code>unfocus</code></div>
+      <div><code>timer 5 minutes</code></div>
+      <div><code>draft commit message</code></div>
     </div>
     <div class="muted small" style="margin-top: 10px;">
       Quick yes/no via head gesture: <strong>nod</strong> = yes, <strong>shake</strong> (or twist base) = no.

@@ -33,10 +33,13 @@ _MODE_DEEP = re.compile(r"\b(deep mode|go deep|focus mode|deep focus|deep)\b", r
 _MODE_NORMAL = re.compile(r"\b(normal mode|normal|default mode)\b", re.I)
 _MODE_AVAILABLE = re.compile(r"\b(available mode|available|open up|open mode)\b", re.I)
 
-_SNOOZE_15 = re.compile(r"\bsnooze\b.*\b(15|fifteen)\b", re.I)
-_SNOOZE_1H = re.compile(r"\bsnooze\b.*\b(1 hour|one hour|hour|60)\b", re.I)
-_SNOOZE_4H = re.compile(r"\bsnooze\b.*\b(4 hours?|four hours?|240)\b", re.I)
-_SNOOZE_BARE = re.compile(r"\bsnooze\b(?!.*?(?:cancel|stop))", re.I)
+# 'snooze' often gets STT-mangled — 'snows', 'snuze', 'snews', 'on the
+# snooze'. Match any of those, plus the literal word.
+_SNOOZE_TOKEN = r"(?:snooze|snews|snows|snuze|snuse|snoos|on the snooze)"
+_SNOOZE_15 = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(15|fifteen)\b", re.I)
+_SNOOZE_1H = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(1 hour|one hour|hour|60)\b", re.I)
+_SNOOZE_4H = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(4 hours?|four hours?|240)\b", re.I)
+_SNOOZE_BARE = re.compile(rf"\b{_SNOOZE_TOKEN}\b(?!.*?(?:cancel|stop))", re.I)
 _UNSNOOZE = re.compile(
     r"\b(wake up|unsnooze|cancel snooze|stop snoozing|end snooze)\b", re.I
 )
@@ -69,6 +72,28 @@ _WHAT_MODE = re.compile(
 )
 _CLEAR_QUEUE = re.compile(
     r"\b(clear (the )?queue|empty (the )?queue|drop queued|forget queued)\b", re.I,
+)
+_OPEN_PRS = re.compile(
+    r"\b(open (my )?p\.?r\.?s?|show (my )?p\.?r\.?s?|my pull requests|open pull requests)\b",
+    re.I,
+)
+_WHATS_BROKEN = re.compile(
+    r"\b(what'?s? broken|what is broken|whats? broken|recent failures|last failures|any failures)\b",
+    re.I,
+)
+# 'focus on owner/repo' — captures the slash-separated repo path.
+_FOCUS_REPO = re.compile(
+    r"\bfocus on (?:repo )?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b", re.I,
+)
+_UNFOCUS = re.compile(
+    r"\b(unfocus|stop focusing|clear focus|focus on everything)\b", re.I,
+)
+# 'timer N (minutes|seconds|hours)' — captures number + unit.
+_TIMER = re.compile(
+    r"\btimer (\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b", re.I,
+)
+_DRAFT_COMMIT = re.compile(
+    r"\b(draft (a )?commit( message)?|commit message|write (a )?commit)\b", re.I,
 )
 
 
@@ -210,8 +235,147 @@ class VoiceCommandRouter:
             asyncio.get_event_loop().call_later(1.0, _restart_self)
             return True
 
+        if _OPEN_PRS.search(t):
+            logger.info("voice: open PRs")
+            await self._open_prs()
+            return True
+
+        if _WHATS_BROKEN.search(t):
+            logger.info("voice: what's broken")
+            await self._whats_broken()
+            return True
+
+        m = _FOCUS_REPO.search(t)
+        if m:
+            repo = m.group(1)
+            logger.info("voice: focus on %s", repo)
+            await self._focus_on_repo(repo)
+            return True
+
+        if _UNFOCUS.search(t):
+            logger.info("voice: unfocus")
+            await self._unfocus_repo()
+            return True
+
+        m = _TIMER.search(t)
+        if m:
+            n, unit = int(m.group(1)), m.group(2).lower()
+            seconds = n
+            if unit.startswith(("min",)):
+                seconds = n * 60
+            elif unit.startswith(("hour", "hr")):
+                seconds = n * 3600
+            logger.info("voice: timer %ds", seconds)
+            await self._set_timer(seconds, n, unit)
+            return True
+
+        if _DRAFT_COMMIT.search(t):
+            logger.info("voice: draft commit")
+            await self._draft_commit_message(t)
+            return True
+
         # No match → return False so handler fires LLM response.create.
         return False
+
+    # ------------------------------------------------------------------
+    # Action helpers (kept here so the dispatch table stays scannable)
+    # ------------------------------------------------------------------
+
+    async def _open_prs(self) -> None:
+        """Speak the GitHub PR review URL. The widget can also open it
+        in the user's browser via the announce text — a future Mac-side
+        helper can pop this in webbrowser.open() automatically."""
+        url = "https://github.com/pulls/review-requested"
+        if self._say is not None:
+            await self._say("Opening your reviews. Link is in the widget.")
+        # Stash on the dispatcher so the widget can show it.
+        if self._dispatcher is not None:
+            try:
+                from .events import Event, EventSeverity
+                from datetime import datetime, timezone
+                ev = Event(
+                    source="self", kind="link", summary="Your GitHub reviews",
+                    link=url, ts=datetime.now(timezone.utc),
+                    fingerprint=f"self:link:prs:{int(datetime.now().timestamp())}",
+                    severity=EventSeverity.INFO,
+                )
+                self._dispatcher._recent_events.append(ev)
+            except Exception as e:
+                logger.debug("link injection failed: %s", e)
+
+    async def _whats_broken(self) -> None:
+        if self._dispatcher is None or self._say is None:
+            return
+        recent = list(self._dispatcher.recent_events)[-50:]
+        fails = [
+            e for e in recent
+            if e.kind in ("ci_fail", "vercel_deploy_fail")
+        ][-3:]
+        if not fails:
+            await self._say("Nothing broken in the recent window.")
+            return
+        parts = [f"{len(fails)} recent {'failure' if len(fails) == 1 else 'failures'}."]
+        for ev in reversed(fails):  # newest first
+            parts.append(ev.summary + ".")
+        await self._say(" ".join(parts))
+
+    async def _focus_on_repo(self, repo: str) -> None:
+        """Set a soft focus filter — only events from `repo` pass through."""
+        # Stored on the dispatcher as a single-allowed-repo override.
+        if self._dispatcher is not None:
+            self._dispatcher._focus_repo = repo  # type: ignore[attr-defined]
+            self._dispatcher._focus_repo_until = (
+                __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+                + __import__("datetime").timedelta(hours=1)
+            )
+        if self._say is not None:
+            await self._say(f"Focused on {repo} for one hour.")
+
+    async def _unfocus_repo(self) -> None:
+        if self._dispatcher is not None:
+            self._dispatcher._focus_repo = None  # type: ignore[attr-defined]
+        if self._say is not None:
+            await self._say("Focus cleared.")
+
+    async def _set_timer(self, seconds: int, n: int, unit: str) -> None:
+        if self._say is not None:
+            await self._say(f"Timer set for {n} {unit}.")
+        import asyncio
+
+        async def _fire() -> None:
+            await asyncio.sleep(seconds)
+            if self._say is not None:
+                await self._say(f"Timer up — {n} {unit} elapsed.")
+
+        asyncio.create_task(_fire(), name=f"timer-{seconds}s")
+
+    async def _draft_commit_message(self, transcript: str) -> None:
+        """Ask OpenClaw for a commit message draft based on recent context."""
+        bridge = getattr(self._handler, "openclaw_bridge", None)
+        if bridge is None or not getattr(bridge, "is_connected", False):
+            if self._say is not None:
+                await self._say("OpenClaw isn't connected, can't draft.")
+            return
+        prompt = (
+            "Draft a single short git commit message (one line, imperative "
+            "mood, under 70 chars) based on what we've been discussing. "
+            "Reply with only the commit message text, no quotes or "
+            "explanation."
+        )
+        try:
+            resp = await bridge.chat(prompt)
+        except Exception as e:
+            logger.warning("draft commit chat failed: %s", e)
+            if self._say is not None:
+                await self._say("Couldn't reach OpenClaw for the draft.")
+            return
+        msg = (resp.content or "").strip().splitlines()[0] if resp and resp.content else ""
+        if not msg:
+            if self._say is not None:
+                await self._say("OpenClaw didn't return a draft.")
+            return
+        if self._say is not None:
+            await self._say(f"Draft commit: {msg}")
 
     async def _speak_status(self) -> None:
         if self._say is None:

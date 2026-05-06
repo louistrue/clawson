@@ -298,6 +298,13 @@ OpenClaw has access to many capabilities you don't have directly.""",
                     "output_audio_format": "pcm16",
                     "input_audio_transcription": {
                         "model": "whisper-1",
+                        # Force English transcription so commands are
+                        # matchable. Without this, Whisper auto-detected
+                        # Korean / mis-transcribed 'snooze' as 스누스 or
+                        # 'on the snows'. The user agreed English-only
+                        # for commands; conversational German still
+                        # works on the LLM output side.
+                        "language": "en",
                     },
                     "turn_detection": {
                         "type": "server_vad",

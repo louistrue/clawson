@@ -56,6 +56,11 @@ class EventDispatcher:
         self._recent: Deque[tuple[str, datetime]] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._queued: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._recent_events: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
+        # Voice-driven 'focus on owner/repo' override. While set and not
+        # expired, only events whose raw['repo'] matches this string get
+        # past the dispatcher; everything else queues silently.
+        self._focus_repo: Optional[str] = None
+        self._focus_repo_until: Optional[datetime] = None
 
     @property
     def queued_events(self) -> list[Event]:
@@ -119,8 +124,19 @@ class EventDispatcher:
 
     def _decide(self, event: Event, mode: FocusMode) -> str:
         critical = event.severity == EventSeverity.CRITICAL
-        # Mute check first — muted events still get queued for the rollup
-        # / widget but never gesture or announce.
+        # Voice-set focus filter: while active, anything that isn't from
+        # the focus repo gets queued silently. Critical events still pass.
+        if not critical and self._focus_repo is not None:
+            now = datetime.now(timezone.utc)
+            if self._focus_repo_until is not None and now >= self._focus_repo_until:
+                self._focus_repo = None
+                self._focus_repo_until = None
+            else:
+                target_repo = (event.raw or {}).get("repo")
+                if target_repo != self._focus_repo:
+                    return "queue"
+        # Mute check — muted events still get queued for the rollup /
+        # widget but never gesture or announce.
         if not critical and self._mute_list.is_muted(event):
             return "queue"
         # Active-hours gate: outside the configured window we silence
