@@ -89,15 +89,23 @@ CLAWSON_PERSONA_SUFFIX = """
 - For event previews: lead with the source and outcome ("CI failed on
   feature/x"). No hedging.
 
-## Language
-- Default language is English. Always reply in English unless the user
-  has clearly spoken to you in another language across this turn.
-- If the user speaks German (or any other non-English language) for at
-  least one full sentence, you MAY mirror that language for the reply.
-- For all out-of-band announcements (instruction-only response.create,
-  no preceding user turn), always speak English.
-- Repository names, commit hashes, and proper nouns stay in their
-  original form — don't translate "feature/auth-fix".
+## Language — STRICT
+This section overrides any earlier guidance about language preferences.
+- Default output language: ENGLISH. Always reply in English.
+- The ONLY allowed exception: the user has just spoken a clear, complete
+  sentence in German across the current turn. Then you MAY reply in
+  German, but only for that one turn — switch back to English next turn.
+- Never reply in Japanese, Korean, Chinese, French, Spanish, Italian,
+  Russian, Czech, Portuguese, Dutch, or any language other than English
+  or German under any circumstances.
+- Speech-to-text often mis-transcribes ambient noise as random non-English
+  syllables. If the transcript is short, garbled, or doesn't read like a
+  coherent German or English sentence, treat it as English noise and
+  reply in English.
+- For out-of-band announcements (instruction-only response.create with no
+  preceding user turn): ALWAYS English. No exceptions.
+- Repository names, commit hashes, and proper nouns stay verbatim —
+  don't translate "feature/auth-fix" or "main".
 """
 
 
@@ -145,6 +153,11 @@ class OpenAIRealtimeHandler(AsyncStreamHandler):
         # dispatch when they're unset.
         self.clawson_actions: Optional[Any] = None    # ActionRegistry
         self.confirmation: Optional[Any] = None       # ConfirmationSystem
+
+        # Track whether a response is currently being generated so say()
+        # can cancel before creating a new one (otherwise OpenAI rejects
+        # with `conversation_already_has_active_response`).
+        self._response_in_flight: bool = False
 
         # OpenAI connection
         self.client: Optional[AsyncOpenAI] = None
@@ -368,7 +381,12 @@ OpenClaw has access to many capabilities you don't have directly.""",
         # Response started - robot is about to speak
         if event_type == "response.created":
             self._speaking = True
+            self._response_in_flight = True
             logger.debug("Response started")
+
+        if event_type in {"response.done", "response.cancelled", "response.failed"}:
+            self._response_in_flight = False
+            logger.debug("Response finished (%s)", event_type)
             
         # Audio output from TTS
         if event_type == "response.audio.delta":
@@ -644,6 +662,20 @@ OpenClaw has access to many capabilities you don't have directly.""",
         if self.connection is None:
             logger.debug("say() skipped: no realtime connection")
             return False
+
+        # If a response is mid-flight, cancel it so the announcement can
+        # preempt without hitting `conversation_already_has_active_response`.
+        if self._response_in_flight:
+            try:
+                await self.connection.response.cancel()
+            except Exception as e:
+                logger.debug("say(): cancel-in-flight failed: %s", e)
+            # Wait briefly for the cancellation to clear server-side.
+            for _ in range(20):
+                if not self._response_in_flight:
+                    break
+                await asyncio.sleep(0.05)
+
         try:
             await self.connection.response.create(
                 response={
@@ -651,9 +683,11 @@ OpenClaw has access to many capabilities you don't have directly.""",
                     # ["audio"] alone is rejected.
                     "modalities": ["audio", "text"],
                     "instructions": (
-                        "Speak the following announcement aloud in English, "
-                        "in your normal voice, verbatim, with no greeting "
-                        "and no extra commentary. Do not translate the text. "
+                        "Output language: English ONLY. Do not use any other "
+                        "language regardless of prior conversation context. "
+                        "Speak the following announcement aloud verbatim, "
+                        "in your normal voice, with no greeting and no extra "
+                        "commentary. Do not translate. "
                         f'Announcement: "{text}"'
                     ),
                 }

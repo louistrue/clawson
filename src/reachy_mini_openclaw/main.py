@@ -198,6 +198,12 @@ class ClawBodyCore:
             ConfirmationSystem,
         )
         from reachy_mini_openclaw.focus.presence import PresenceAutoSnooze
+        from reachy_mini_openclaw.focus.head_gesture import (
+            HeadGestureDetector,
+            HeadGestureEvent,
+            make_head_joints_reader,
+            make_imu_reader,
+        )
         from reachy_mini_openclaw.mcp_clients.github import GitHubClient
         from reachy_mini_openclaw.clawson_config import load_clawson_config
         
@@ -494,6 +500,26 @@ class ClawBodyCore:
             focus_settings=self.clawson_cfg.focus,
             is_within_active_hours=is_within_active_hours,
         )
+
+        # Head-gesture detector (nod = yes, shake = no). For now wired
+        # only as a logger + announce; later it'll feed ConfirmationSystem
+        # so action-mode confirmations accept a nod or a shake.
+        async def _on_head_gesture(ev: "HeadGestureEvent") -> None:
+            logger.info("head gesture: %s", ev.kind)
+            # Phase A: route to confirmation if pending; otherwise just log.
+            if self.confirmation is not None and self.confirmation.has_pending:
+                if ev.kind == "nod":
+                    self.confirmation.confirm()
+                elif ev.kind == "shake":
+                    self.confirmation.deny()
+                return
+            await _say(f"detected {ev.kind}")
+
+        self.head_gesture_detector = HeadGestureDetector(
+            imu_reader=make_imu_reader(self.robot),
+            head_joints_reader=make_head_joints_reader(self.robot),
+            on_event=_on_head_gesture,
+        )
         
     def _initialize_vision_manager(self) -> Optional[Any]:
         """Initialize local vision processor (SmolVLM2).
@@ -728,6 +754,12 @@ class ClawBodyCore:
         self._tasks.append(
             asyncio.create_task(
                 self.presence_auto_snooze.run(self._should_stop), name="presence"
+            )
+        )
+        self._tasks.append(
+            asyncio.create_task(
+                self.head_gesture_detector.run_until(self._should_stop),
+                name="head-gesture",
             )
         )
         if self.widget_server is not None:
