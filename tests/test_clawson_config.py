@@ -38,3 +38,20 @@ def test_malformed_toml_falls_back_to_env(tmp_path: Path, monkeypatch):
     bad.write_text("][")
     cfg = load_clawson_config(bad)
     assert cfg.github_token == "ghp_env"
+
+
+def test_loads_vercel_token_from_toml(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("VERCEL_TOKEN", raising=False)
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[vercel]\ntoken = "vrc_from_toml"\n')
+    cfg = load_clawson_config(cfg_file)
+    assert cfg.vercel_token == "vrc_from_toml"
+    assert cfg.vercel_enabled is True
+
+
+def test_vercel_env_overrides_toml(tmp_path: Path, monkeypatch):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[vercel]\ntoken = "vrc_toml"\n')
+    monkeypatch.setenv("VERCEL_TOKEN", "vrc_env")
+    cfg = load_clawson_config(cfg_file)
+    assert cfg.vercel_token == "vrc_env"

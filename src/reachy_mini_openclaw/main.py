@@ -172,7 +172,9 @@ class ClawBodyCore:
         )
         from reachy_mini_openclaw.briefing import EventBus
         from reachy_mini_openclaw.briefing.dispatcher import EventDispatcher
-        from reachy_mini_openclaw.briefing.poller import GitHubPoller
+        from reachy_mini_openclaw.briefing.github_poller import GitHubPoller
+        from reachy_mini_openclaw.briefing.vercel_poller import VercelPoller
+        from reachy_mini_openclaw.mcp_clients.vercel import VercelClient
         from reachy_mini_openclaw.briefing.standup import (
             StandupRunner,
             is_within_active_hours,
@@ -339,6 +341,14 @@ class ClawBodyCore:
             logger.info(
                 "Clawson: GitHub disabled (no token in ~/.config/clawson/config.toml or $GITHUB_TOKEN)"
             )
+
+        # Vercel poller: optional, off by default. Token gates startup.
+        self.vercel_client: Optional[Any] = None
+        self.vercel_poller: Optional[Any] = None
+        if self.clawson_cfg.vercel_enabled:
+            self.vercel_client = VercelClient(self.clawson_cfg.vercel_token)
+            self.vercel_poller = VercelPoller(self.vercel_client, self.event_bus)
+            logger.info("Clawson: Vercel poller armed")
         
     def _initialize_vision_manager(self) -> Optional[Any]:
         """Initialize local vision processor (SmolVLM2).
@@ -549,6 +559,12 @@ class ClawBodyCore:
                     self.github_poller.run(self._should_stop), name="github-poller"
                 )
             )
+        if self.vercel_poller is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self.vercel_poller.run(self._should_stop), name="vercel-poller"
+                )
+            )
         
         try:
             await asyncio.gather(*self._tasks)
@@ -570,13 +586,16 @@ class ClawBodyCore:
         self.movement_manager.stop()
 
         # Close Clawson HTTP clients.
-        if self.github_client is not None:
+        for client_attr in ("github_client", "vercel_client"):
+            client = getattr(self, client_attr, None)
+            if client is None:
+                continue
             try:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(self.github_client.aclose())
+                loop.run_until_complete(client.aclose())
                 loop.close()
             except Exception as e:
-                logger.warning("github client close failed: %s", e)
+                logger.warning("%s close failed: %s", client_attr, e)
         
         # Stop vision manager
         if self.vision_manager is not None:

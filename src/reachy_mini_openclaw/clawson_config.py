@@ -78,11 +78,16 @@ class FocusSettings:
 @dataclass
 class ClawsonConfig:
     github_token: Optional[str] = None
+    vercel_token: Optional[str] = None
     focus: FocusSettings = field(default_factory=FocusSettings)
 
     @property
     def github_enabled(self) -> bool:
         return bool(self.github_token)
+
+    @property
+    def vercel_enabled(self) -> bool:
+        return bool(self.vercel_token)
 
 
 def _focus_from_section(section: dict) -> FocusSettings:
@@ -121,9 +126,11 @@ def load_clawson_config(path: Path = DEFAULT_CONFIG_PATH) -> ClawsonConfig:
             raw = {}
 
     github_section = raw.get("github") or {}
+    vercel_section = raw.get("vercel") or {}
     focus_settings = _focus_from_section(raw.get("focus") or {})
 
     return ClawsonConfig(
         github_token=os.environ.get("GITHUB_TOKEN") or github_section.get("token"),
+        vercel_token=os.environ.get("VERCEL_TOKEN") or vercel_section.get("token"),
         focus=focus_settings,
     )

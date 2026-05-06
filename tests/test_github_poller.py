@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 from reachy_mini_openclaw.briefing.events import EventSeverity
-from reachy_mini_openclaw.briefing.poller import (
+from reachy_mini_openclaw.briefing.github_poller import (
     _api_to_web,
     _notification_to_event,
     _workflow_run_to_event,
