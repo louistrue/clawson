@@ -780,15 +780,45 @@ OpenClaw has access to many capabilities you don't have directly.""",
 
     async def cancel_speaking(self) -> bool:
         """Interrupt whatever's currently being spoken. Used by the voice
-        'shut up' / 'stop talking' command."""
-        if self.connection is None or not self._response_in_flight:
+        'shut up' / 'stop talking' command and by shake-to-abort.
+
+        Two-stage cancel:
+          1. Tell the API to stop generating new audio (response.cancel).
+          2. Drain self.output_queue of audio chunks already received
+             but not yet played. Without this drain the speaker keeps
+             playing 1-3 s of buffered audio after the cancel arrives,
+             which the user perceives as 'cancel didn't work'.
+        """
+        if self.connection is None:
             return False
-        try:
-            await self.connection.response.cancel()
-            return True
-        except Exception as e:
-            logger.debug("cancel_speaking failed: %s", e)
-            return False
+        cancelled = False
+        if self._response_in_flight:
+            try:
+                await self.connection.response.cancel()
+                cancelled = True
+            except Exception as e:
+                logger.debug("cancel_speaking: response.cancel failed: %s", e)
+        # Drain audio queue regardless — even if response wasn't in
+        # flight, residual chunks from a just-finished response could
+        # still be in the queue and play out. Audio items are tuples;
+        # AdditionalOutputs (transcripts, sync events) are not — keep
+        # those by re-enqueueing in original order.
+        drained = 0
+        non_audio: list = []
+        while not self.output_queue.empty():
+            try:
+                item = self.output_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(item, tuple):
+                drained += 1
+            else:
+                non_audio.append(item)
+        for item in non_audio:
+            await self.output_queue.put(item)
+        if drained:
+            logger.info("cancel_speaking: drained %d buffered audio chunks", drained)
+        return cancelled or drained > 0
 
     async def repeat_last_say(self) -> bool:
         """Speak the last say() text again."""
