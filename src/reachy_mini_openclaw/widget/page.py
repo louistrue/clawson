@@ -123,8 +123,8 @@ PAGE = """<!doctype html>
     <div class="muted" style="margin-bottom: 8px;">VOICE COMMANDS</div>
     <div class="voicehints">
       <div><code>deep mode</code> / <code>available</code> / <code>normal</code></div>
-      <div><code>snooze fifteen</code> / <code>snooze hour</code> / <code>snooze four hours</code></div>
-      <div><code>wake up</code> / <code>cancel snooze</code></div>
+      <div><code>sleep</code> / <code>sleep fifteen</code> / <code>sleep hour</code> / <code>sleep four hours</code></div>
+      <div><code>wake up</code> / <code>stop sleeping</code></div>
       <div><code>standup</code> / <code>rollup</code> / <code>what's queued</code></div>
       <div><code>shut up</code> / <code>be quiet</code></div>
       <div><code>say again</code> / <code>repeat</code></div>

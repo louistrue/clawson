@@ -33,10 +33,12 @@ _MODE_DEEP = re.compile(r"\b(deep mode|go deep|focus mode|deep focus|deep)\b", r
 _MODE_NORMAL = re.compile(r"\b(normal mode|normal|default mode)\b", re.I)
 _MODE_AVAILABLE = re.compile(r"\b(available mode|available|open up|open mode)\b", re.I)
 
-# 'snooze' gets STT-mangled all over the place. Captured today on robot:
-# 'snooze' → 'Sluice', 'snows', 'snuze', 'on the snooze'. Be generous.
+# 'sleep' is the user-preferred token (clearer phonetically, less STT
+# drift than 'snooze', and reads naturally as a sleep-pose command).
+# Snooze and its STT mishears stay in for backwards compat.
 _SNOOZE_TOKEN = (
-    r"(?:snooze|snews|snows|snuze|snuse|snoos|sloose|sluice"
+    r"(?:sleep|go to sleep|sleeping"
+    r"|snooze|snews|snows|snuze|snuse|snoos|sloose|sluice"
     r"|on the snooze|the snooze)"
 )
 _SNOOZE_15 = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(15|fifteen)\b", re.I)
@@ -44,7 +46,8 @@ _SNOOZE_1H = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(1 hour|one hour|hour|60)\b", 
 _SNOOZE_4H = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(4 hours?|four hours?|240)\b", re.I)
 _SNOOZE_BARE = re.compile(rf"\b{_SNOOZE_TOKEN}\b(?!.*?(?:cancel|stop))", re.I)
 _UNSNOOZE = re.compile(
-    r"\b(wake up|unsnooze|cancel snooze|stop snoozing|end snooze)\b", re.I
+    r"\b(wake up|wake|unsnooze|cancel snooze|stop snoozing|end snooze"
+    r"|stop sleeping|end sleep|no more sleep)\b", re.I
 )
 
 _STANDUP = re.compile(
