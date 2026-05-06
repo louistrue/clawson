@@ -73,16 +73,25 @@ class CameraWorker:
         self.previous_head_tracking_state = self.is_head_tracking_enabled
         
         # Tracking scale factor (proportional gain for the camera-head servo loop).
-        # Restored to 1.0 — head fully tracks the face. Smoothness comes from
-        # the 2nd-order filter below, not from clipping the target.
-        self.tracking_scale = 1.0
+        # Kept at 0.7: scaling the look_at_image setpoint caps how aggressive
+        # the spring chases an edge-of-frame face. Without this, edge faces
+        # produced 0.5+ rad targets and the head slammed at ~190°/s.
+        self.tracking_scale = 0.7
 
         # Critically-damped 2nd-order ("spring-damper") low-pass filter.
-        # Settle time ≈ 4/ω. ω=18 → ~0.22 s. With detection at 25 Hz but
-        # smoother running at 100 Hz, the 4× sub-stepping means the head
-        # accelerates between detector frames instead of staircasing.
-        self._smooth_omega = 18.0
+        # Settle time ≈ 4/ω. ω=10 → ~0.4 s — the value that was running
+        # smoothly before the (failed) ω=18 experiment that produced
+        # destructive head whips.
+        self._smooth_omega = 10.0
         self._smooth_zeta = 1.0
+        # Hard safety clamps independent of the spring math. Even if a
+        # stale dt or huge setpoint jump kicks the integrator, the head can
+        # never command faster than these:
+        #   _max_vel        — peak rad/s the smoother is allowed to output
+        #   _max_step       — peak rad commanded per loop tick (~5°/tick)
+        # Applied AFTER the spring update so they bound the worst case.
+        self._max_vel = 1.2          # rad/s ≈ 69°/s
+        self._max_step = 0.09        # rad ≈ 5° per 10 ms tick
         self._smooth_pos: List[float] = [0.0] * 6
         self._smooth_vel: List[float] = [0.0] * 6
         self._smooth_last_t: float = time.monotonic()
@@ -134,10 +143,13 @@ class CameraWorker:
             enabled: Whether to enable face tracking
         """
         if enabled and not self.is_head_tracking_enabled:
-            # Reset spring filter state so tracking converges from rest.
-            self._smooth_pos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            self._smooth_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            # Seed spring from current commanded offsets so we don't snap
+            # the head to zero on re-enable. Velocity starts at rest.
+            with self.face_tracking_lock:
+                self._smooth_pos = list(self.face_tracking_offsets)
+            self._smooth_vel = [0.0] * 6
             self._smoothed_offsets = self._smooth_pos
+            self._target_offsets = list(self._smooth_pos)
             self._smooth_last_t = time.monotonic()
             # Start scanning immediately when re-enabled
             self._start_scanning()
@@ -191,12 +203,19 @@ class CameraWorker:
         zeta = self._smooth_zeta
         omega_sq = omega * omega
         two_zeta_omega = 2.0 * zeta * omega
+        max_vel = self._max_vel
+        max_step = self._max_step
         for i in range(6):
             err = target[i] - self._smooth_pos[i]
             acc = omega_sq * err - two_zeta_omega * self._smooth_vel[i]
-            self._smooth_vel[i] += acc * dt
-            self._smooth_pos[i] += self._smooth_vel[i] * dt
-        # Keep alias in sync.
+            v = self._smooth_vel[i] + acc * dt
+            if v > max_vel: v = max_vel
+            elif v < -max_vel: v = -max_vel
+            self._smooth_vel[i] = v
+            step = v * dt
+            if step > max_step: step = max_step
+            elif step < -max_step: step = -max_step
+            self._smooth_pos[i] += step
         self._smoothed_offsets = self._smooth_pos
         return list(self._smooth_pos)
 
@@ -343,6 +362,17 @@ class CameraWorker:
             # Scale for smoother closed-loop convergence
             translation *= self.tracking_scale
             rotation *= self.tracking_scale
+
+            # Clamp setpoints. Even with scale=0.7, an edge-of-frame face
+            # can yield rotations >0.5 rad which the spring will faithfully
+            # chase at high velocity. Bound to safe head ranges.
+            max_rot = 0.45      # ~26°, well within head joint limits
+            max_trans = 0.04    # 4 cm body lean
+            for j in range(3):
+                if translation[j] > max_trans: translation[j] = max_trans
+                elif translation[j] < -max_trans: translation[j] = -max_trans
+                if rotation[j] > max_rot: rotation[j] = max_rot
+                elif rotation[j] < -max_rot: rotation[j] = -max_rot
 
             # Update the SETPOINT only; the 100Hz loop ticks the spring
             # toward it, which keeps motion fluid between 25Hz detections.
