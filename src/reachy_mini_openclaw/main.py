@@ -183,6 +183,10 @@ class ClawBodyCore:
         )
         from reachy_mini_openclaw.briefing.mutes import load_mutes
         from reachy_mini_openclaw.briefing.cost_tracker import CostTracker
+        from reachy_mini_openclaw.briefing.triggers import (
+            FaceDetectStandupTrigger,
+            make_voice_trigger,
+        )
         from reachy_mini_openclaw.mcp_clients.github import GitHubClient
         from reachy_mini_openclaw.clawson_config import load_clawson_config
         
@@ -357,6 +361,16 @@ class ClawBodyCore:
             self.clawson_cfg.focus,
             on_announce=_say,
             drain_queued=self.event_dispatcher.drain_queued,
+        )
+
+        # Voice command trigger: keyword on user transcript fires standup.
+        self.handler.on_user_transcript = make_voice_trigger(self.standup_runner)
+
+        # Face-detect trigger: morning face appearance in 06:00–08:00ish window.
+        self.face_trigger = FaceDetectStandupTrigger(
+            camera_worker=self.camera_worker,
+            standup_runner=self.standup_runner,
+            focus_settings=self.clawson_cfg.focus,
         )
 
         # Desktop widget — localhost-only by default, optional via env.
@@ -592,6 +606,9 @@ class ClawBodyCore:
             ),
             asyncio.create_task(
                 self.standup_runner.run(self._should_stop), name="standup-runner"
+            ),
+            asyncio.create_task(
+                self.face_trigger.run(self._should_stop), name="face-detect-trigger"
             ),
         ]
         if self.github_poller is not None:

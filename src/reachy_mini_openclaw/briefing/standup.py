@@ -165,4 +165,13 @@ def _format_script(events: List[Event]) -> str:
     if "pr_merged" in by_kind:
         n = len(by_kind["pr_merged"])
         parts.append(f"{n} of your pull request{'s' if n != 1 else ''} merged.")
+    if "vercel_deploy_fail" in by_kind:
+        n = len(by_kind["vercel_deploy_fail"])
+        parts.append(f"{n} Vercel deploy{'s' if n != 1 else ''} failed.")
+    if "vercel_deploy_success" in by_kind:
+        n = len(by_kind["vercel_deploy_success"])
+        parts.append(f"{n} Vercel deploy{'s' if n != 1 else ''} shipped.")
+    if "auth_failed" in by_kind:
+        sources = sorted({e.source for e in by_kind["auth_failed"]})
+        parts.append(f"Token rejected for {' and '.join(sources)} — update config.")
     return " ".join(parts)

@@ -124,7 +124,11 @@ class OpenAIRealtimeHandler(AsyncStreamHandler):
         self.deps = deps
         self.openclaw_bridge = openclaw_bridge
         self.gradio_mode = gradio_mode
-        
+
+        # Optional hook fired on every completed user transcript. Clawson
+        # uses it for the "voice command" trigger (e.g. saying "standup").
+        self.on_user_transcript: Optional[Any] = None
+
         # OpenAI connection
         self.client: Optional[AsyncOpenAI] = None
         self.connection: Any = None
@@ -333,6 +337,11 @@ OpenClaw has access to many capabilities you don't have directly.""",
                 await self.output_queue.put(
                     AdditionalOutputs({"role": "user", "content": transcript})
                 )
+                if self.on_user_transcript is not None:
+                    try:
+                        await self.on_user_transcript(transcript)
+                    except Exception as e:
+                        logger.debug("on_user_transcript hook failed: %s", e)
             
         # Response started - robot is about to speak
         if event_type == "response.created":
