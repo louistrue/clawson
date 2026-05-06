@@ -178,6 +178,13 @@ class OpenAIRealtimeHandler(AsyncStreamHandler):
         # via `repeat_last_say()`.
         self._last_say_text: Optional[str] = None
 
+        # Paused state — set when the desk PC is offline. While paused,
+        # say() is a no-op (no token burn for narration) and auto LLM
+        # responses to user transcripts are suppressed. The mic/audio
+        # pipeline keeps running so local voice commands ("wake up",
+        # "deep mode", etc.) still work — they don't go through the LLM.
+        self._paused: bool = False
+
         # OpenAI connection
         self.client: Optional[AsyncOpenAI] = None
         self.connection: Any = None
@@ -417,11 +424,16 @@ OpenClaw has access to many capabilities you don't have directly.""",
                         handled = bool(result)
                     except Exception as e:
                         logger.debug("on_user_transcript hook failed: %s", e)
-                if not handled and self.connection is not None:
+                if not handled and self.connection is not None and not self._paused:
                     try:
                         await self.connection.response.create()
                     except Exception as e:
                         logger.debug("LLM response.create failed: %s", e)
+                elif not handled and self._paused:
+                    logger.debug(
+                        "transcript handled=False but realtime paused; "
+                        "skipping LLM response (host offline)"
+                    )
             
         # Response started - robot is about to speak
         if event_type == "response.created":
@@ -707,6 +719,9 @@ OpenClaw has access to many capabilities you don't have directly.""",
         if self.connection is None:
             logger.debug("say() skipped: no realtime connection")
             return False
+        if self._paused:
+            logger.debug("say() skipped: realtime is paused (host offline)")
+            return False
 
         # If a response is mid-flight, cancel it so the announcement can
         # preempt without hitting `conversation_already_has_active_response`.
@@ -752,6 +767,16 @@ OpenClaw has access to many capabilities you don't have directly.""",
         router and head-gesture handler to decide whether a 'no' / shake
         should abort speech vs. fall through to normal handling."""
         return self._response_in_flight
+
+    @property
+    def is_paused(self) -> bool:
+        """True when host-presence has paused conversational AI to save
+        OpenAI tokens (desk PC is offline)."""
+        return self._paused
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = bool(paused)
+        logger.info("realtime handler %s", "paused" if self._paused else "resumed")
 
     async def cancel_speaking(self) -> bool:
         """Interrupt whatever's currently being spoken. Used by the voice

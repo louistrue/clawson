@@ -55,6 +55,7 @@ class WidgetServer:
         mute_list: Optional[MuteList] = None,
         event_log: Optional[EventLog] = None,
         event_bus: Optional[EventBus] = None,
+        host_presence: Optional[Any] = None,
     ) -> None:
         self._focus = focus_controller
         self._dispatcher = event_dispatcher
@@ -63,6 +64,7 @@ class WidgetServer:
         self._mute_list = mute_list
         self._event_log = event_log
         self._event_bus = event_bus
+        self._host_presence = host_presence
         self._host = host
         self._port = port
         self._app = FastAPI(title="Clawson Widget", docs_url=None, redoc_url=None)
@@ -80,6 +82,11 @@ class WidgetServer:
         async def state() -> JSONResponse:
             from datetime import datetime, timezone
             s = self._focus.state
+            host_state = "unknown"
+            host_url = None
+            if self._host_presence is not None:
+                host_state = self._host_presence.state
+                host_url = self._host_presence.gateway_url
             return JSONResponse({
                 "mode": s.mode.value,
                 "snooze_until": s.snooze_until.isoformat() if s.snooze_until else None,
@@ -89,7 +96,16 @@ class WidgetServer:
                 "active_hours_now": is_within_active_hours(
                     self._focus_settings, datetime.now(timezone.utc)
                 ),
+                "host_presence": host_state,
+                "host_gateway": host_url,
             })
+
+        @app.post("/api/host/recheck")
+        async def host_recheck() -> JSONResponse:
+            if self._host_presence is None:
+                raise HTTPException(status_code=404, detail="host presence not enabled")
+            await self._host_presence.force_recheck()
+            return JSONResponse({"ok": True, "state": self._host_presence.state})
 
         @app.post("/api/mode/cycle")
         async def mode_cycle() -> JSONResponse:

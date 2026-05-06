@@ -1,0 +1,34 @@
+[Unit]
+Description=Clawson — Reachy Mini work-buddy
+After=network-online.target reachy-mini-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pollen
+Group=pollen
+WorkingDirectory=/home/pollen/clawbody
+
+# Inherit the venv that has reachy_mini_openclaw + reachy_mini installed.
+# /venvs/apps_venv is where the daemon installs Clawbody apps.
+EnvironmentFile=-/home/pollen/clawbody/.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/venvs/apps_venv/bin/python -u -m reachy_mini_openclaw.main
+StandardOutput=append:/var/log/clawson/clawson.log
+StandardError=append:/var/log/clawson/clawson.log
+
+# Restart on crash, but back off so we don't hammer the realtime API
+# during a persistent failure (e.g., OPENAI_API_KEY revoked).
+Restart=on-failure
+RestartSec=10s
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Graceful shutdown: SIGTERM to let main.py drain pollers + close
+# OpenAI session, then SIGKILL after 15 s if it hasn't exited.
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

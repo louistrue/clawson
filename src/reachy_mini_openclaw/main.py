@@ -468,6 +468,51 @@ class ClawBodyCore:
 
         # Desktop widget — localhost-only by default, optional via env.
         widget_disabled = os.getenv("CLAWSON_WIDGET_DISABLED", "").lower() in {"1", "true", "yes"}
+        # Host presence: wired before widget so the widget can read its
+        # state. Callbacks are defined here so they capture self in the
+        # right order (sleep_animator, handler, openclaw_bridge are all
+        # already set up by this point).
+        from reachy_mini_openclaw.host_presence import HostPresenceMonitor
+
+        async def _on_host_offline() -> None:
+            logger.info("host offline: pausing realtime + entering sleep pose")
+            try:
+                await self.handler.cancel_speaking()
+            except Exception as e:
+                logger.debug("host offline: cancel_speaking failed: %s", e)
+            try:
+                self.handler.set_paused(True)
+            except Exception as e:
+                logger.debug("host offline: handler.set_paused failed: %s", e)
+            try:
+                await self.sleep_animator.enter_sleep(reason="host offline")
+            except Exception as e:
+                logger.debug("host offline: enter_sleep failed: %s", e)
+
+        async def _on_host_online() -> None:
+            logger.info("host online: resuming realtime + waking")
+            try:
+                self.handler.set_paused(False)
+            except Exception as e:
+                logger.debug("host online: handler.set_paused failed: %s", e)
+            try:
+                await self.sleep_animator.exit_sleep(reason="host online")
+            except Exception as e:
+                logger.debug("host online: exit_sleep failed: %s", e)
+            # Best-effort bridge reconnect; bridge has its own backoff.
+            if self.openclaw_bridge is not None:
+                try:
+                    if not self.openclaw_bridge.is_connected:
+                        await self.openclaw_bridge.connect()
+                except Exception as e:
+                    logger.debug("host online: bridge reconnect failed: %s", e)
+
+        self.host_presence = HostPresenceMonitor(
+            gateway_url=self.gateway_url,
+            on_host_offline=_on_host_offline,
+            on_host_online=_on_host_online,
+        )
+
         self.widget_server: Optional[Any] = None
         if not widget_disabled:
             self.widget_server = WidgetServer(
@@ -480,6 +525,7 @@ class ClawBodyCore:
                 mute_list=self.mute_list,
                 event_log=self.event_log,
                 event_bus=self.event_bus,
+                host_presence=self.host_presence,
             )
         self.github_client: Optional[Any] = None
         self.github_poller: Optional[Any] = None
@@ -1070,6 +1116,11 @@ class ClawBodyCore:
                     self.widget_server.run(self._should_stop), name="widget-server"
                 )
             )
+        self._tasks.append(
+            asyncio.create_task(
+                self.host_presence.run(self._should_stop), name="host-presence"
+            )
+        )
         
         try:
             await asyncio.gather(*self._tasks)

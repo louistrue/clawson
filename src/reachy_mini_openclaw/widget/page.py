@@ -32,6 +32,11 @@ PAGE = """<!doctype html>
   h1 { font-size: 16px; margin: 0; letter-spacing: 0.04em; }
   .heartbeat { font-size: 11px; color: var(--muted); }
   .heartbeat .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--good); margin-right: 4px; vertical-align: middle; }
+  .hostpill { font-size: 10px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--line); margin-right: 8px; cursor: default; letter-spacing: 0.02em; text-transform: uppercase; }
+  .hostpill.online { background: rgba(121,209,138,0.12); border-color: rgba(121,209,138,0.4); color: var(--good); }
+  .hostpill.offline { background: rgba(244,118,114,0.10); border-color: rgba(244,118,114,0.4); color: var(--bad); cursor: pointer; }
+  .hostpill.offline:hover { background: rgba(244,118,114,0.20); }
+  .hostpill.unknown { color: var(--muted); }
 
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -78,7 +83,10 @@ PAGE = """<!doctype html>
 <body>
   <header>
     <h1>🦞 CLAWSON</h1>
-    <div class="heartbeat"><span class="dot"></span><span id="heartbeat-text">live</span></div>
+    <div class="heartbeat">
+      <span id="host-pill" class="hostpill" title="desk PC reachability">host: …</span>
+      <span class="dot"></span><span id="heartbeat-text">live</span>
+    </div>
   </header>
 
   <div class="panel">
@@ -104,6 +112,7 @@ PAGE = """<!doctype html>
     <div class="row" style="margin-top: 6px;">
       <button class="primary" onclick="post('/api/standup')">▶ Standup</button>
       <button onclick="post('/api/queue/clear')">Clear queue</button>
+      <button id="reconnect-btn" onclick="reconnectHost()" style="display:none">↻ Reconnect host</button>
       <button class="warn" onclick="confirmRestart()">↻ Restart</button>
     </div>
   </div>
@@ -162,6 +171,16 @@ PAGE = """<!doctype html>
     document.getElementById('heartbeat-text').textContent = 'restarting…';
   }
 
+  async function reconnectHost() {
+    const pill = document.getElementById('host-pill');
+    const prev = pill.textContent;
+    pill.textContent = 'host: checking…';
+    try {
+      await fetch('/api/host/recheck', {method: 'POST'});
+    } catch (e) {}
+    setTimeout(refresh, 500);
+  }
+
   function fmtEvent(e) {
     let tone = 'ev-info';
     if (e.severity === 'critical') tone = 'ev-crit';
@@ -204,6 +223,26 @@ PAGE = """<!doctype html>
         s.queued.length ? s.queued.map(fmtEvent).join('') : '<li class="muted">empty</li>';
       document.getElementById('recent').innerHTML =
         s.recent.length ? s.recent.slice().reverse().map(fmtEvent).join('') : '<li class="muted">empty</li>';
+
+      // Host presence pill + reconnect button.
+      const hp = s.host_presence || 'unknown';
+      const pill = document.getElementById('host-pill');
+      const btn = document.getElementById('reconnect-btn');
+      pill.className = 'hostpill ' + hp;
+      if (hp === 'online') {
+        pill.textContent = 'host: online';
+        pill.title = 'desk PC reachable: ' + (s.host_gateway || '');
+        btn.style.display = 'none';
+      } else if (hp === 'offline') {
+        pill.textContent = 'host: offline';
+        pill.title = 'desk PC unreachable — click Reconnect to retry now';
+        btn.style.display = 'inline-block';
+      } else {
+        pill.textContent = 'host: …';
+        pill.title = 'host presence unknown (probing)';
+        btn.style.display = 'inline-block';
+      }
+
       document.getElementById('heartbeat-text').textContent = 'live';
     } catch (e) {
       const age = Math.round((Date.now() - lastBeat) / 1000);
