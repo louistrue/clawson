@@ -159,6 +159,10 @@ class OpenAIRealtimeHandler(AsyncStreamHandler):
         # with `conversation_already_has_active_response`).
         self._response_in_flight: bool = False
 
+        # Last say()'d text — exposed so the voice router can repeat it
+        # via `repeat_last_say()`.
+        self._last_say_text: Optional[str] = None
+
         # OpenAI connection
         self.client: Optional[AsyncOpenAI] = None
         self.connection: Any = None
@@ -692,10 +696,29 @@ OpenClaw has access to many capabilities you don't have directly.""",
                     ),
                 }
             )
+            self._last_say_text = text
             return True
         except Exception as e:
             logger.warning("say() failed: %s", e)
             return False
+
+    async def cancel_speaking(self) -> bool:
+        """Interrupt whatever's currently being spoken. Used by the voice
+        'shut up' / 'stop talking' command."""
+        if self.connection is None or not self._response_in_flight:
+            return False
+        try:
+            await self.connection.response.cancel()
+            return True
+        except Exception as e:
+            logger.debug("cancel_speaking failed: %s", e)
+            return False
+
+    async def repeat_last_say(self) -> bool:
+        """Speak the last say() text again."""
+        if not self._last_say_text:
+            return False
+        return await self.say(self._last_say_text)
         
     async def shutdown(self) -> None:
         """Shutdown the handler."""

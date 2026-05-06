@@ -106,39 +106,20 @@ class FocusController:
             await asyncio.sleep(EXPIRY_CHECK_INTERVAL_S)
 
     async def _handle_event(self, ev: AntennaEvent) -> None:
-        logger.info("antenna event: side=%s kind=%s", ev.side, ev.kind)
-
-        # While an action is awaiting confirmation, antenna taps are
-        # repurposed: right = confirm, left = cancel. Holds and 'both'
-        # still go to their normal handlers so the user can always escape.
-        if (
-            self._confirmation is not None
-            and self._confirmation.has_pending
-            and ev.kind == "tap"
-        ):
-            if ev.side == "right":
-                self._confirmation.confirm()
-                return
-            if ev.side == "left":
-                self._confirmation.deny()
-                return
-
-        if ev.side == "right" and ev.kind == "tap":
-            await self.request_cycle()
-        elif ev.side == "left" and ev.kind == "tap":
-            await self.request_snooze(SNOOZE_TAP, label="fifteen minutes")
-        elif ev.side == "left" and ev.kind == "double":
-            await self.request_snooze(SNOOZE_DOUBLE, label="one hour")
-        elif ev.side == "left" and ev.kind == "hold":
-            await self.request_snooze(SNOOZE_HOLD, label="four hours")
-        elif ev.side == "both" and ev.kind == "tap":
-            await self._fire_rollup()
-        elif ev.side == "right" and ev.kind == "hold":
-            # Right-hold = "trigger standup now" (4th plan trigger).
-            await self._fire_standup()
-        elif ev.side == "right" and ev.kind == "double":
-            # Reserved for future bindings; no-op for v1.
-            await self._announce("right double not yet bound")
+        """Antennas are now confirmation-only: right tap = YES, left tap = NO.
+        Mode switches, snooze, standup, rollup all go through voice or the
+        widget. Holds / doubles / both are no-ops here so the antennas
+        can't accidentally toggle state.
+        """
+        logger.debug("antenna event: side=%s kind=%s", ev.side, ev.kind)
+        if ev.kind != "tap":
+            return
+        if self._confirmation is None or not self._confirmation.has_pending:
+            return  # no pending question → ignore the tap
+        if ev.side == "right":
+            self._confirmation.confirm()
+        elif ev.side == "left":
+            self._confirmation.deny()
 
     # ------------------------------------------------------------------
     # Public action API — used by antenna handler AND the widget.

@@ -389,8 +389,17 @@ class ClawBodyCore:
             drain_queued=self.event_dispatcher.drain_queued,
         )
 
-        # Voice command trigger: keyword on user transcript fires standup.
-        self.handler.on_user_transcript = make_voice_trigger(self.standup_runner)
+        # Voice command router: catches mode/snooze/standup/quiet/repeat
+        # commands on user transcripts and dispatches them. Anything that
+        # isn't a command falls through to the LLM normally.
+        from reachy_mini_openclaw.briefing.voice_router import VoiceCommandRouter
+        self.voice_router = VoiceCommandRouter(
+            focus_controller=self.focus_controller,
+            standup_runner=self.standup_runner,
+            handler=self.handler,
+            say=_say,
+        )
+        self.handler.on_user_transcript = self.voice_router
 
         # Face-detect trigger: morning face appearance in 06:00–08:00ish window.
         self.face_trigger = FaceDetectStandupTrigger(
