@@ -61,9 +61,12 @@ class HeadTracker:
         h, w = img.shape[:2]
 
         try:
-            # Convert BGR to RGB for MediaPipe
-            rgb_img = img[:, :, ::-1]
-            
+            # Convert BGR to RGB for MediaPipe. The slice `[:, :, ::-1]`
+            # produces a non-contiguous view; MediaPipe needs c_contiguous,
+            # so we copy. Without this every frame errors and tracking
+            # silently dies.
+            rgb_img = np.ascontiguousarray(img[:, :, ::-1])
+
             # Run face detection
             results = self.face_detection.process(rgb_img)
             
