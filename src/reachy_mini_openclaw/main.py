@@ -303,6 +303,11 @@ class ClawBodyCore:
         # State
         self._stop_event = asyncio.Event()
         self._shutting_down: bool = False
+        # When set, MovementManager.stop() commands this pose as the
+        # final 'hold' instead of returning to neutral. graceful_shutdown
+        # populates it with the off-pose so the robot stays bowed while
+        # the process is dead.
+        self._final_pose: Optional[Any] = None
         self._tasks: list[asyncio.Task] = []
 
         # Clawson config drives standup time, active hours, GitHub auth.
@@ -1149,7 +1154,11 @@ class ClawBodyCore:
         self._shutting_down = True
         logger.info("graceful shutdown requested via %s", signal_name)
         try:
-            from reachy_mini_openclaw.gestures.sleep import OffPoseMove
+            from reachy_mini_openclaw.gestures.sleep import (
+                OffPoseMove,
+                _OFF_HEAD_POSE,
+                _OFF_ANTENNAS,
+            )
             self.movement_manager.clear_move_queue()
             pose = self.movement_manager.state.last_primary_pose
             if pose is not None:
@@ -1160,6 +1169,15 @@ class ClawBodyCore:
             else:
                 self.movement_manager.queue_move(OffPoseMove())
             logger.info("graceful shutdown: off-pose queued")
+            # Tell MovementManager.stop() to hold the off-pose instead
+            # of returning to neutral once the control thread exits.
+            # Without this the daemon's last command is neutral and the
+            # robot pops back up the moment our process dies.
+            self._final_pose = (
+                _OFF_HEAD_POSE.copy(),
+                (float(_OFF_ANTENNAS[0]), float(_OFF_ANTENNAS[1])),
+                0.0,
+            )
         except Exception as e:
             logger.warning("graceful shutdown: off-pose queue failed: %s", e)
         # Cancel any in-flight TTS so the speaker isn't talking while we
@@ -1188,9 +1206,10 @@ class ClawBodyCore:
             if not task.done():
                 task.cancel()
                 
-        # Stop movement system
+        # Stop movement system. If graceful_shutdown set a final_pose
+        # (off-pose), pass it through so the daemon holds it post-exit.
         self.head_wobbler.stop()
-        self.movement_manager.stop()
+        self.movement_manager.stop(final_pose=self._final_pose)
 
         # Close Clawson HTTP clients.
         for client_attr in (

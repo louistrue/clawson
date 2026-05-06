@@ -567,30 +567,56 @@ class MovementManager:
         self._thread.start()
         logger.info("MovementManager started")
         
-    def stop(self) -> None:
-        """Stop the control loop and reset to neutral."""
+    def stop(self, final_pose: Optional[FullBodyPose] = None) -> None:
+        """Stop the control loop and command a final hold pose.
+
+        After the 100 Hz thread exits there's nobody left to call
+        set_target, so we issue a single goto_target as the last
+        command before disconnecting. The daemon's control loop holds
+        whatever pose was last commanded, so this is what the robot
+        physically settles to until the next clawson run picks it up.
+
+        Args:
+            final_pose: (head, (ant_l, ant_r), body_yaw) to hold. If
+                None, falls back to neutral — appropriate for dev-time
+                Ctrl-C. The graceful-shutdown path passes the off-pose
+                so the robot stays bowed while the process is dead.
+        """
         if self._thread is None or not self._thread.is_alive():
             return
-            
+
         logger.info("Stopping MovementManager...")
         self.clear_move_queue()
-        
+
         self._stop_event.set()
         self._thread.join(timeout=2.0)
         self._thread = None
-        
-        # Reset to neutral
+
         try:
-            neutral = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
-            self.current_robot.goto_target(
-                head=neutral,
-                antennas=[0.0, 0.0],
-                duration=2.0,
-                body_yaw=0.0,
-            )
-            logger.info("Reset to neutral position")
+            if final_pose is not None:
+                head, antennas, body_yaw = final_pose
+                # Short duration: the OffPoseMove already animated the
+                # joints there; this is a 'lock in' command so the
+                # daemon holds the pose post-disconnect, not a fresh
+                # animation.
+                self.current_robot.goto_target(
+                    head=head,
+                    antennas=[float(antennas[0]), float(antennas[1])],
+                    duration=0.3,
+                    body_yaw=float(body_yaw),
+                )
+                logger.info("Held final pose (post-shutdown)")
+            else:
+                neutral = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+                self.current_robot.goto_target(
+                    head=neutral,
+                    antennas=[0.0, 0.0],
+                    duration=2.0,
+                    body_yaw=0.0,
+                )
+                logger.info("Reset to neutral position")
         except Exception as e:
-            logger.error("Failed to reset: %s", e)
+            logger.error("Failed to set final pose: %s", e)
             
     def _run_loop(self) -> None:
         """Main control loop at 100Hz."""
