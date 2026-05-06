@@ -57,7 +57,8 @@ _REPEAT = re.compile(
     re.I,
 )
 _RESTART = re.compile(
-    r"\b(restart yourself|reboot yourself|restart clawson|reboot clawson|reload yourself|kick yourself)\b",
+    r"\b(restart yourself|reboot yourself|restart clawson|reboot clawson"
+    r"|reload yourself|kick yourself|^restart\.?$|^reboot\.?$)\b",
     re.I,
 )
 _STATUS = re.compile(

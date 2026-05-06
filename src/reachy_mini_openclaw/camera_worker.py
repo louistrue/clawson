@@ -72,7 +72,9 @@ class CameraWorker:
         # Tracking scale factor (proportional gain for the camera-head servo loop).
         # 0.85 provides accurate convergence via closed-loop feedback while
         # avoiding single-frame overshoot that causes jitter.
-        self.tracking_scale = 0.85
+        # Lower scale = head moves a smaller fraction of the face delta,
+        # making the follow gentler and less stuttery on rapid head turns.
+        self.tracking_scale = 0.55
         
         # Smoothing factor for exponential moving average (0.0-1.0)
         # At 25Hz with alpha=0.25, 95% convergence ~0.5s -- smooth enough to
