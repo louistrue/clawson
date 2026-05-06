@@ -544,6 +544,36 @@ OpenClaw has access to many capabilities you don't have directly.""",
     async def emit(self) -> Tuple[int, NDArray[np.int16]] | AdditionalOutputs | None:
         """Get the next output (audio or transcript)."""
         return await wait_for_item(self.output_queue)
+
+    async def say(self, text: str) -> bool:
+        """Speak `text` out-of-band (no prior user turn).
+
+        Used by Clawson for snooze/cycle confirmations and event previews.
+        Generates audio via response.create with `instructions=` so we
+        don't pollute the conversation with a fake user message. Fails
+        silently if the session is disconnected or another response is
+        in flight; callers should treat it as best-effort.
+        """
+        if not text:
+            return False
+        if self.connection is None:
+            logger.debug("say() skipped: no realtime connection")
+            return False
+        try:
+            await self.connection.response.create(
+                response={
+                    "modalities": ["audio"],
+                    "instructions": (
+                        "Speak the following announcement aloud verbatim, "
+                        "in your normal voice, with no greeting and no extra "
+                        f'commentary. Announcement: "{text}"'
+                    ),
+                }
+            )
+            return True
+        except Exception as e:
+            logger.warning("say() failed: %s", e)
+            return False
         
     async def shutdown(self) -> None:
         """Shutdown the handler."""

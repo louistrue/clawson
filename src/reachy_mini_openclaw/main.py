@@ -173,6 +173,10 @@ class ClawBodyCore:
         from reachy_mini_openclaw.briefing import EventBus
         from reachy_mini_openclaw.briefing.dispatcher import EventDispatcher
         from reachy_mini_openclaw.briefing.poller import GitHubPoller
+        from reachy_mini_openclaw.briefing.standup import (
+            StandupRunner,
+            is_within_active_hours,
+        )
         from reachy_mini_openclaw.mcp_clients.github import GitHubClient
         from reachy_mini_openclaw.clawson_config import load_clawson_config
         
@@ -271,9 +275,20 @@ class ClawBodyCore:
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
 
+        # Clawson config drives standup time, active hours, GitHub auth.
+        self.clawson_cfg = load_clawson_config()
+
+        # Spoken announcement bridge — wired through OpenAIRealtimeHandler.say().
+        async def _say(message: str) -> None:
+            try:
+                await self.handler.say(message)
+            except Exception as e:
+                logger.debug("say bridge failed: %s", e)
+
         # Clawson focus controller — antenna input → mode state machine.
         async def _announce_focus(message: str) -> None:
             logger.info("[focus] %s", message)
+            await _say(message)
 
         async def _on_focus_change(new_mode, previous_mode) -> None:
             logger.info("[focus] mode %s → %s", previous_mode.value, new_mode.value)
@@ -284,14 +299,35 @@ class ClawBodyCore:
             on_change=_on_focus_change,
         )
 
+        # Event-pipeline announce hook (Phase 3): summary spoken when
+        # AVAILABLE; in NORMAL the gesture is the whole signal.
+        from reachy_mini_openclaw.briefing.events import Event as _ClawsonEvent
+
+        async def _announce_event(event: "_ClawsonEvent") -> None:
+            await _say(event.summary)
+
         # Clawson event pipeline: bus + dispatcher (always on),
         # GitHub poller (only if a token is configured).
-        self.clawson_cfg = load_clawson_config()
+        from datetime import datetime as _dt, timezone as _tz
+
+        def _active_hours_now() -> bool:
+            return is_within_active_hours(self.clawson_cfg.focus, _dt.now(_tz.utc))
+
         self.event_bus = EventBus()
         self.event_dispatcher = EventDispatcher(
             self.event_bus,
             focus_mode_provider=lambda: self.focus_controller.mode,
             movement_manager=self.movement_manager,
+            on_announce=_announce_event,
+            active_hours_provider=_active_hours_now,
+        )
+
+        # Morning standup. Drains queued events from the dispatcher into a
+        # spoken rollup at standup time on standup days.
+        self.standup_runner = StandupRunner(
+            self.clawson_cfg.focus,
+            on_announce=_say,
+            drain_queued=self.event_dispatcher.drain_queued,
         )
         self.github_client: Optional[Any] = None
         self.github_poller: Optional[Any] = None
@@ -502,6 +538,9 @@ class ClawBodyCore:
             ),
             asyncio.create_task(
                 self.event_dispatcher.run(self._should_stop), name="event-dispatcher"
+            ),
+            asyncio.create_task(
+                self.standup_runner.run(self._should_stop), name="standup-runner"
             ),
         ]
         if self.github_poller is not None:

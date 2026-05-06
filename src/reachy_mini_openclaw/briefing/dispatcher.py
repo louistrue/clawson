@@ -38,11 +38,13 @@ class EventDispatcher:
         movement_manager: Any,                       # MovementManager
         *,
         on_announce: Optional[Callable[[Event], Awaitable[None]]] = None,
+        active_hours_provider: Optional[Callable[[], bool]] = None,
     ) -> None:
         self._bus = bus
         self._focus_mode_provider = focus_mode_provider
         self._movement_manager = movement_manager
         self._on_announce = on_announce
+        self._active_hours_provider = active_hours_provider
         self._recent: Deque[tuple[str, datetime]] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._queued: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
 
@@ -101,6 +103,16 @@ class EventDispatcher:
 
     def _decide(self, event: Event, mode: FocusMode) -> str:
         critical = event.severity == EventSeverity.CRITICAL
+        # Active-hours gate: outside the configured window we silence
+        # non-critical events regardless of focus mode (the morning
+        # standup at 07:30 is a separate path that doesn't go through
+        # the dispatcher, so it's not affected).
+        if self._active_hours_provider is not None and not critical:
+            try:
+                if not self._active_hours_provider():
+                    return "queue"
+            except Exception as e:
+                logger.debug("active_hours_provider failed: %s", e)
         if mode in (FocusMode.DEEP, FocusMode.SNOOZED):
             return "gesture_only" if critical else "queue"
         if mode == FocusMode.NORMAL:
