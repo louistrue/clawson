@@ -175,6 +175,7 @@ class ClawBodyCore:
         from reachy_mini_openclaw.briefing.github_poller import GitHubPoller
         from reachy_mini_openclaw.briefing.vercel_poller import VercelPoller
         from reachy_mini_openclaw.mcp_clients.vercel import VercelClient
+        from reachy_mini_openclaw.widget import WidgetServer
         from reachy_mini_openclaw.briefing.standup import (
             StandupRunner,
             is_within_active_hours,
@@ -331,6 +332,19 @@ class ClawBodyCore:
             on_announce=_say,
             drain_queued=self.event_dispatcher.drain_queued,
         )
+
+        # Desktop widget — localhost-only by default, optional via env.
+        widget_disabled = os.getenv("CLAWSON_WIDGET_DISABLED", "").lower() in {"1", "true", "yes"}
+        self.widget_server: Optional[Any] = None
+        if not widget_disabled:
+            self.widget_server = WidgetServer(
+                self.focus_controller,
+                self.event_dispatcher,
+                self.standup_runner,
+                self.clawson_cfg.focus,
+                host=os.getenv("CLAWSON_WIDGET_HOST", "127.0.0.1"),
+                port=int(os.getenv("CLAWSON_WIDGET_PORT", "7860")),
+            )
         self.github_client: Optional[Any] = None
         self.github_poller: Optional[Any] = None
         if self.clawson_cfg.github_enabled:
@@ -563,6 +577,12 @@ class ClawBodyCore:
             self._tasks.append(
                 asyncio.create_task(
                     self.vercel_poller.run(self._should_stop), name="vercel-poller"
+                )
+            )
+        if self.widget_server is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self.widget_server.run(self._should_stop), name="widget-server"
                 )
             )
         

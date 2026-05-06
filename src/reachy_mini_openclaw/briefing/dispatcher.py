@@ -47,10 +47,15 @@ class EventDispatcher:
         self._active_hours_provider = active_hours_provider
         self._recent: Deque[tuple[str, datetime]] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._queued: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
+        self._recent_events: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
 
     @property
     def queued_events(self) -> list[Event]:
         return list(self._queued)
+
+    @property
+    def recent_events(self) -> list[Event]:
+        return list(self._recent_events)
 
     def drain_queued(self) -> list[Event]:
         out = list(self._queued)
@@ -76,6 +81,7 @@ class EventDispatcher:
             logger.debug("dispatcher: dedup'd %s", event.fingerprint)
             return
         self._recent.append((event.fingerprint, datetime.now(timezone.utc)))
+        self._recent_events.append(event)
 
         mode = self._focus_mode_provider()
         action = self._decide(event, mode)

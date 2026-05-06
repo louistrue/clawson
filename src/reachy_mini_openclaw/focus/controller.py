@@ -12,13 +12,24 @@ from .store import DEFAULT_STATE_PATH, load_state, save_state
 
 logger = logging.getLogger(__name__)
 
-# Snooze durations bound to gestures. Tap = 15m, hold = 4h. Double-tap (1h)
-# is intentionally deferred to phase 1.5 along with widget control.
+# Snooze durations bound to gestures. Tap = 15m, hold = 4h. The 1h slot
+# is the widget's job (phase 5) and a future antenna double-tap.
 SNOOZE_TAP = timedelta(minutes=15)
 SNOOZE_HOLD = timedelta(hours=4)
 
 # How often to check for snooze expiry when no antenna events fire.
 EXPIRY_CHECK_INTERVAL_S = 15.0
+
+
+def _humanise_duration(d: timedelta) -> str:
+    minutes = int(d.total_seconds() // 60)
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    hours = minutes // 60
+    rest = minutes % 60
+    if rest == 0:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    return f"{hours} hour{'s' if hours != 1 else ''} {rest} minutes"
 
 
 class FocusController:
@@ -92,35 +103,57 @@ class FocusController:
 
     async def _handle_event(self, ev: AntennaEvent) -> None:
         logger.info("antenna event: side=%s kind=%s", ev.side, ev.kind)
-        previous = self._state.mode
 
         if ev.side == "right" and ev.kind == "tap":
-            new_mode = self._state.cycle()
-            await self._announce(f"focus mode {new_mode.value}")
-
+            await self.request_cycle()
         elif ev.side == "left" and ev.kind == "tap":
-            until = self._state.snooze(SNOOZE_TAP)
-            await self._announce("snoozing fifteen minutes")
-            logger.info("snoozed until %s", until.isoformat())
-
+            await self.request_snooze(SNOOZE_TAP, label="fifteen minutes")
         elif ev.side == "left" and ev.kind == "hold":
-            until = self._state.snooze(SNOOZE_HOLD)
-            await self._announce("snoozing four hours")
-            logger.info("snoozed until %s", until.isoformat())
-
+            await self.request_snooze(SNOOZE_HOLD, label="four hours")
         elif ev.side == "both" and ev.kind == "tap":
             await self._fire_rollup()
-            return  # rollup doesn't change mode
-
         elif ev.side == "right" and ev.kind == "hold":
-            # Right-hold reserved (e.g. "what's queued?" or trigger standup).
-            # No-op for v1; surface via TTS so user knows it's a deliberate gap.
             await self._announce("hold not yet bound")
-            return
 
-        else:
-            return
+    # ------------------------------------------------------------------
+    # Public action API — used by antenna handler AND the widget.
+    # ------------------------------------------------------------------
+    async def request_cycle(self) -> FocusMode:
+        previous = self._state.mode
+        new_mode = self._state.cycle()
+        await self._announce(f"focus mode {new_mode.value}")
+        save_state(self._state, self._state_path)
+        await self._fire_change(previous)
+        return new_mode
 
+    async def request_snooze(self, duration: timedelta, *, label: Optional[str] = None) -> None:
+        previous = self._state.mode
+        until = self._state.snooze(duration)
+        spoken = label or _humanise_duration(duration)
+        await self._announce(f"snoozing {spoken}")
+        logger.info("snoozed until %s", until.isoformat())
+        save_state(self._state, self._state_path)
+        await self._fire_change(previous)
+
+    async def request_unsnooze(self) -> None:
+        if self._state.mode != FocusMode.SNOOZED:
+            return
+        previous = self._state.mode
+        # Cycle path triggers the restore + advance; instead, just restore.
+        self._state._restore()  # type: ignore[attr-defined]
+        await self._announce(f"snooze cancelled; back to {self._state.mode.value}")
+        save_state(self._state, self._state_path)
+        await self._fire_change(previous)
+
+    async def request_set_mode(self, target: FocusMode) -> None:
+        if target == FocusMode.SNOOZED:
+            # Use request_snooze for snoozing; refuse to set SNOOZED directly.
+            return
+        previous = self._state.mode
+        self._state.mode = target
+        self._state.snooze_until = None
+        self._state.previous_mode = None
+        await self._announce(f"focus mode {target.value}")
         save_state(self._state, self._state_path)
         await self._fire_change(previous)
 

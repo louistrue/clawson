@@ -48,6 +48,10 @@ dependencies = [
 
     # GitHub / Vercel REST clients (Clawson)
     "httpx>=0.27",
+
+    # Desktop widget (Clawson)
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
     
     # Gradio UI
     "gradio>=4.0.0",
