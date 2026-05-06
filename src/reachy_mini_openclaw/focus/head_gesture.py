@@ -29,11 +29,13 @@ POLL_INTERVAL_S = 0.05            # 20 Hz
 WINDOW_S = 1.2                    # rolling window for oscillation detection
 
 # Detection thresholds (rad/s on the relevant gyro axis).
-# Manual nodding/shaking peaks well above the breathing/idle noise floor;
-# these will be tuned on real data, see CLAWSON_DEBUG_HEAD_GESTURE=1.
-PEAK_THRESHOLD_RAD_S = 1.5
+# Tuned 2026-05-06 against on-robot recordings: nods peak around ±1.0
+# rad/s, head shakes around ±1.5, base-rotation shakes ±2.3. Idle
+# breathing noise sits at ±0.05. 0.7 is the sweet spot — catches all
+# real gestures without tripping on minor sway.
+PEAK_THRESHOLD_RAD_S = 0.7
 ZERO_CROSSINGS_REQUIRED = 3       # → at least 1.5 oscillation cycles
-MIN_AXIS_DOMINANCE = 1.6          # primary axis must beat the other by this ×
+MIN_AXIS_DOMINANCE = 2.0          # primary axis must beat the other by this ×
 
 # Cooldown between consecutive emissions so a single gesture doesn't fire
 # multiple events.
