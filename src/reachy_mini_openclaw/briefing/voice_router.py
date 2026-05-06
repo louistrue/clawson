@@ -33,9 +33,12 @@ _MODE_DEEP = re.compile(r"\b(deep mode|go deep|focus mode|deep focus|deep)\b", r
 _MODE_NORMAL = re.compile(r"\b(normal mode|normal|default mode)\b", re.I)
 _MODE_AVAILABLE = re.compile(r"\b(available mode|available|open up|open mode)\b", re.I)
 
-# 'snooze' often gets STT-mangled — 'snows', 'snuze', 'snews', 'on the
-# snooze'. Match any of those, plus the literal word.
-_SNOOZE_TOKEN = r"(?:snooze|snews|snows|snuze|snuse|snoos|on the snooze)"
+# 'snooze' gets STT-mangled all over the place. Captured today on robot:
+# 'snooze' → 'Sluice', 'snows', 'snuze', 'on the snooze'. Be generous.
+_SNOOZE_TOKEN = (
+    r"(?:snooze|snews|snows|snuze|snuse|snoos|sloose|sluice"
+    r"|on the snooze|the snooze)"
+)
 _SNOOZE_15 = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(15|fifteen)\b", re.I)
 _SNOOZE_1H = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(1 hour|one hour|hour|60)\b", re.I)
 _SNOOZE_4H = re.compile(rf"\b{_SNOOZE_TOKEN}\b.*\b(4 hours?|four hours?|240)\b", re.I)

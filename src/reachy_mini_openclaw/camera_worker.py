@@ -77,27 +77,21 @@ class CameraWorker:
         # the 2nd-order filter below, not from clipping the target.
         self.tracking_scale = 1.0
 
-        # Critically-damped 2nd-order ("spring-damper") low-pass filter on
-        # the offsets. Smooth-AND-snappy: target changes are tracked
-        # responsively but jerks/jitter are absorbed because acceleration
-        # is bounded.
-        #
-        #   acc = ω² (target - pos) − 2ζω · vel
-        #   vel += acc · dt
-        #   pos += vel · dt
-        #
-        # ζ = 1.0 = critical damping (no overshoot). ω is the natural
-        # frequency in rad/s — settling time ≈ 4/ω. ω=10 → ~0.4 s settle.
-        # Higher ω feels snappier; lower feels lazier. EMA is first-order
-        # and forces a trade-off between smoothness and lag; 2nd-order
-        # removes that.
-        self._smooth_omega = 10.0
+        # Critically-damped 2nd-order ("spring-damper") low-pass filter.
+        # Settle time ≈ 4/ω. ω=18 → ~0.22 s. With detection at 25 Hz but
+        # smoother running at 100 Hz, the 4× sub-stepping means the head
+        # accelerates between detector frames instead of staircasing.
+        self._smooth_omega = 18.0
         self._smooth_zeta = 1.0
         self._smooth_pos: List[float] = [0.0] * 6
         self._smooth_vel: List[float] = [0.0] * 6
         self._smooth_last_t: float = time.monotonic()
         # Backwards-compat alias for any code that reads _smoothed_offsets.
         self._smoothed_offsets: List[float] = self._smooth_pos
+        # Target the smoother chases. Updated when a fresh face detection,
+        # scanning step, or neutral-return interpolation produces new
+        # offsets; smoother ticks toward this every loop iteration.
+        self._target_offsets: List[float] = [0.0] * 6
         
         # --- Room scanning state ---
         # When no face is visible, the robot periodically sweeps the room.
@@ -218,10 +212,8 @@ class CameraWorker:
         yaw = float(self._scan_yaw_amplitude * np.sin(2 * np.pi * t / self._scan_period))
         pitch = float(self._scan_pitch_offset)
 
-        target = [0.0, 0.0, 0.0, 0.0, pitch, yaw]
-        smoothed = self._step_smoother(target)
-        with self.face_tracking_lock:
-            self.face_tracking_offsets = smoothed
+        # Set the spring's target; the main loop will chase it.
+        self._target_offsets = [0.0, 0.0, 0.0, 0.0, pitch, yaw]
 
     # ------------------------------------------------------------------
     # Main loop
@@ -242,38 +234,49 @@ class CameraWorker:
         if self.is_head_tracking_enabled and self.head_tracker is not None:
             self._start_scanning()
 
+        # Detection runs at ~25 Hz (CPU-bound on aarch64), smoother runs at
+        # ~100 Hz so MovementManager always sees freshly-interpolated offsets
+        # between detector frames. Decoupling kills the staircase artefact
+        # the user noticed on yaw turns.
+        DETECTION_PERIOD = 0.04   # 25 Hz detection
+        LOOP_PERIOD = 0.01        # 100 Hz smoother / write
+        last_detection_t = 0.0
+
         while not self._stop_event.is_set():
             try:
                 current_time = time.time()
+                now_mono = time.monotonic()
+                do_detect = (now_mono - last_detection_t) >= DETECTION_PERIOD
 
-                # Get frame from robot
-                frame = self.reachy_mini.media.get_frame()
+                if do_detect:
+                    last_detection_t = now_mono
+                    frame = self.reachy_mini.media.get_frame()
+                    if frame is not None:
+                        with self.frame_lock:
+                            self.latest_frame = frame
+                        if (self.previous_head_tracking_state
+                                and not self.is_head_tracking_enabled):
+                            self.last_face_detected_time = current_time
+                            self.interpolation_start_time = None
+                            self.interpolation_start_pose = None
+                            self._stop_scanning()
+                        self.previous_head_tracking_state = self.is_head_tracking_enabled
+                        if self.is_head_tracking_enabled and self.head_tracker is not None:
+                            self._process_face_tracking(frame, current_time, neutral_pose)
+                        elif self.last_face_detected_time is not None:
+                            self._interpolate_to_neutral(current_time, neutral_pose)
 
-                if frame is not None:
-                    # Thread-safe frame storage
-                    with self.frame_lock:
-                        self.latest_frame = frame
+                # Always tick the spring + write offsets, regardless of
+                # whether detection ran this iteration. _process_face_tracking
+                # / _update_scanning_offsets / _interpolate_to_neutral now
+                # only update self._target_offsets; the smoother chases it
+                # at full loop rate.
+                if self.is_head_tracking_enabled or self.last_face_detected_time is not None:
+                    smoothed = self._step_smoother(self._target_offsets)
+                    with self.face_tracking_lock:
+                        self.face_tracking_offsets = smoothed
 
-                    # Check if face tracking was just disabled
-                    if self.previous_head_tracking_state and not self.is_head_tracking_enabled:
-                        # Face tracking was just disabled - start interpolation to neutral
-                        self.last_face_detected_time = current_time
-                        self.interpolation_start_time = None
-                        self.interpolation_start_pose = None
-                        self._stop_scanning()
-
-                    # Update tracking state
-                    self.previous_head_tracking_state = self.is_head_tracking_enabled
-
-                    # Handle face tracking if enabled and head tracker available
-                    if self.is_head_tracking_enabled and self.head_tracker is not None:
-                        self._process_face_tracking(frame, current_time, neutral_pose)
-                    elif self.last_face_detected_time is not None:
-                        # Handle interpolation back to neutral when tracking disabled
-                        self._interpolate_to_neutral(current_time, neutral_pose)
-
-                # Sleep to maintain ~25Hz
-                time.sleep(0.04)
+                time.sleep(LOOP_PERIOD)
 
             except Exception as e:
                 logger.error("Camera worker error: %s", e)
@@ -341,16 +344,12 @@ class CameraWorker:
             translation *= self.tracking_scale
             rotation *= self.tracking_scale
 
-            # Critically-damped 2nd-order step toward the target offsets.
-            # Smooth + snappy: the spring tracks fast-moving faces without
-            # ringing, and stays glued during pauses.
-            target = [
+            # Update the SETPOINT only; the 100Hz loop ticks the spring
+            # toward it, which keeps motion fluid between 25Hz detections.
+            self._target_offsets = [
                 translation[0], translation[1], translation[2],
                 rotation[0], rotation[1], rotation[2],
             ]
-            smoothed = self._step_smoother(target)
-            with self.face_tracking_lock:
-                self.face_tracking_offsets = smoothed
 
         else:
             # No face detected
@@ -412,17 +411,19 @@ class CameraWorker:
             translation = interpolated_pose[:3, 3]
             rotation = R.from_matrix(interpolated_pose[:3, :3]).as_euler("xyz", degrees=False)
 
-            # Thread-safe update of face tracking offsets
-            with self.face_tracking_lock:
-                self.face_tracking_offsets = [
-                    translation[0], translation[1], translation[2],
-                    rotation[0], rotation[1], rotation[2],
-                ]
+            # Update the spring's target; main loop chases it.
+            self._target_offsets = [
+                translation[0], translation[1], translation[2],
+                rotation[0], rotation[1], rotation[2],
+            ]
 
             # If interpolation is complete, start scanning the room
             if t >= 1.0:
                 self.last_face_detected_time = None
                 self.interpolation_start_time = None
                 self.interpolation_start_pose = None
-                self._smoothed_offsets = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                self._smooth_pos = [0.0] * 6
+                self._smooth_vel = [0.0] * 6
+                self._smoothed_offsets = self._smooth_pos
+                self._target_offsets = [0.0] * 6
                 self._start_scanning()
