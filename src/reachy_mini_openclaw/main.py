@@ -455,6 +455,7 @@ class ClawBodyCore:
             say=_say,
             event_dispatcher=self.event_dispatcher,
             focus_settings=self.clawson_cfg.focus,
+            sleep_animator=self.sleep_animator,
         )
         self.handler.on_user_transcript = self.voice_router
 
@@ -767,13 +768,33 @@ class ClawBodyCore:
         from reachy_mini_openclaw.gestures import WiggleAntennaMove as _WiggleMove
 
         async def _on_head_gesture(ev: "HeadGestureEvent") -> None:
-            # Head gestures are confirmation-only, same as antennas.
-            # Without a pending question we ignore them entirely — the
-            # face tracker rotates the head all the time, and we don't
-            # want every face-tracker movement to wiggle antennas /
-            # speak "yes" / "no". Mode/snooze/standup all go through
-            # voice + widget instead.
-            if self.confirmation is None or not self.confirmation.has_pending:
+            # Head gestures have two purposes:
+            #   1. Confirm a pending question (nod=yes, shake=no).
+            #   2. Shake-to-abort the current TTS so the user can cut
+            #      Clawson off without speaking. Nods do NOT abort —
+            #      that would turn the face-tracker's natural pitch
+            #      into a barge-in, which is too noisy.
+            no_pending = (
+                self.confirmation is None
+                or not self.confirmation.has_pending
+            )
+            if no_pending:
+                if ev.kind == "shake" and getattr(self.handler, "is_speaking", False):
+                    logger.info("head gesture: shake → abort speaking")
+                    try:
+                        pose = self.movement_manager.state.last_primary_pose
+                        if pose is not None:
+                            head, ant, _yaw = pose
+                            self.movement_manager.queue_move(
+                                _WiggleMove("left", head, ant)
+                            )
+                    except Exception as e:
+                        logger.debug("abort wiggle failed: %s", e)
+                    try:
+                        await self.handler.cancel_speaking()
+                    except Exception as e:
+                        logger.debug("cancel_speaking failed: %s", e)
+                    return
                 logger.debug("head gesture %s ignored (no pending confirmation)", ev.kind)
                 return
             logger.info("head gesture: %s (confirming)", ev.kind)

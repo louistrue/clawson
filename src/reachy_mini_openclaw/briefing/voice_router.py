@@ -58,6 +58,14 @@ _QUIET = re.compile(
     r"\b(stop talking|shut up|be quiet|quiet please|stop speaking|cancel speaking|hush)\b",
     re.I,
 )
+# Short-form abort: only fires when the robot is actively speaking. Lets
+# the user shut down the current TTS with a one-syllable "no" / "stop"
+# / "wait" rather than the full "shut up" phrase, while still letting
+# conversational "no" pass through to the LLM when nothing's playing.
+_ABORT_SHORT = re.compile(
+    r"^\s*(no+|nope|stop|wait|hold on|hush|nah|shh|sh+)[\.\!\?\s]*$",
+    re.I,
+)
 _REPEAT = re.compile(
     r"\b(say again|repeat( that)?|what (was that|did you say)|sorry( what)?)\b",
     re.I,
@@ -121,6 +129,7 @@ class VoiceCommandRouter:
         say: Optional[Callable[[str], Awaitable[None]]] = None,
         event_dispatcher: Any = None,
         focus_settings: Any = None,
+        sleep_animator: Any = None,
     ) -> None:
         self._focus = focus_controller
         self._standup = standup_runner
@@ -128,6 +137,7 @@ class VoiceCommandRouter:
         self._say = say
         self._dispatcher = event_dispatcher
         self._focus_settings = focus_settings
+        self._sleep_animator = sleep_animator
 
     async def __call__(self, transcript: str) -> bool:
         """Return True if the transcript matched a command (and was handled),
@@ -142,10 +152,31 @@ class VoiceCommandRouter:
             return False
 
     async def _dispatch(self, t: str) -> bool:
+        # Short-form abort while speaking: "no" / "stop" / "wait" cancels
+        # the current TTS and waits for the next user input. Critical that
+        # we check is_speaking — otherwise a conversational "no" gets
+        # eaten and never reaches the LLM.
+        if _ABORT_SHORT.match(t) and getattr(self._handler, "is_speaking", False):
+            logger.info("voice: abort speaking (heard '%s')", t.strip())
+            try:
+                await self._handler.cancel_speaking()
+            except Exception as e:
+                logger.debug("cancel_speaking failed: %s", e)
+            return True
+
         # Snooze cancel must beat plain snooze regex.
         if _UNSNOOZE.search(t):
             logger.info("voice: unsnooze")
             await self._focus.request_unsnooze()
+            # Belt-and-braces: focus.request_unsnooze short-circuits if
+            # focus mode wasn't SNOOZED (e.g., sleep was triggered by
+            # face-absence presence rather than an explicit snooze). In
+            # that case the wake animation needs to run too.
+            if self._sleep_animator is not None:
+                try:
+                    await self._sleep_animator.exit_sleep(reason="voice wake")
+                except Exception as e:
+                    logger.debug("voice: exit_sleep direct call failed: %s", e)
             return True
 
         if _SNOOZE_4H.search(t):

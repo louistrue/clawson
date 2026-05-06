@@ -746,6 +746,13 @@ OpenClaw has access to many capabilities you don't have directly.""",
             logger.warning("say() failed: %s", e)
             return False
 
+    @property
+    def is_speaking(self) -> bool:
+        """True while a TTS response is in flight. Used by the voice
+        router and head-gesture handler to decide whether a 'no' / shake
+        should abort speech vs. fall through to normal handling."""
+        return self._response_in_flight
+
     async def cancel_speaking(self) -> bool:
         """Interrupt whatever's currently being spoken. Used by the voice
         'shut up' / 'stop talking' command."""

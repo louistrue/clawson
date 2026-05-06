@@ -33,9 +33,12 @@ _SLEEP_HEAD_POSE = create_head_pose(
 # SDK's SLEEP_ANTENNAS_JOINT_POSITIONS = [-3.05, 3.05] — antennas folded
 # all the way back. Same here.
 _SLEEP_ANTENNAS = np.array([-3.05, 3.05], dtype=np.float64)
-# SDK's INIT_ANTENNAS_JOINT_POSITIONS = [-0.1745, 0.1745] — ~10° offset
-# to reduce vertical-position chatter. Awake position.
-_AWAKE_ANTENNAS = np.array([-0.1745, 0.1745], dtype=np.float64)
+# Awake target = breathing neutral (0, 0). Matches BreathingMove's
+# `neutral_antennas` so the wake-then-breathe handoff produces no
+# additional antenna travel. Earlier we used the SDK's INIT_ANTENNAS
+# (-0.1745, 0.1745) but it caused a perceptible second hop after
+# WakeUpMove finished and breathing kicked in.
+_AWAKE_ANTENNAS = np.array([0.0, 0.0], dtype=np.float64)
 _NEUTRAL_HEAD_POSE = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True, mm=True)
 
 

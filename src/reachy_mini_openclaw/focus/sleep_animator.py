@@ -98,8 +98,10 @@ class SleepAnimator:
             pose = self._mm.state.last_primary_pose
             if pose is not None:
                 head, ant, _yaw = pose
+                logger.info("sleep animator: queue WakeUpMove (start ant=%s)", ant)
                 self._mm.queue_move(WakeUpMove(start_pose=head, start_antennas=ant))
             else:
+                logger.info("sleep animator: queue WakeUpMove (default start)")
                 self._mm.queue_move(WakeUpMove())
         except Exception as e:
             logger.warning("sleep animator: queue wake failed: %s", e)
