@@ -11,8 +11,10 @@ from ..mcp_clients.github import (
     Repo,
     WorkflowRun,
 )
+from .backoff import Backoff
 from .events import Event, EventBus, EventSeverity
 from .filters import GitHubFilterState, github_event_should_pass
+from .persistence import load_github_state, save_github_state
 
 logger = logging.getLogger(__name__)
 
@@ -123,15 +125,26 @@ class GitHubPoller:
         bus: EventBus,
         *,
         filter_state: Optional[GitHubFilterState] = None,
+        persist: bool = True,
     ) -> None:
         self._client = client
         self._bus = bus
-        self._filter_state = filter_state or GitHubFilterState()
+        # Load prior state from disk so a restart doesn't refire stale events.
+        self._persist = persist
+        if persist and filter_state is None:
+            loaded_state, loaded_since = load_github_state()
+            self._filter_state = loaded_state
+            self._notifications_since: Optional[datetime] = loaded_since
+        else:
+            self._filter_state = filter_state or GitHubFilterState()
+            self._notifications_since = None
         self._my_login: str = ""
         self._watched_repos: List[Repo] = []
         self._known_run_ids: Dict[str, set] = {}  # repo → seen run IDs
-        self._notifications_since: Optional[datetime] = None
         self._my_recent_branches: Dict[Tuple[str, str], datetime] = {}
+        # Backoffs are per-loop so a runs outage doesn't slow notifications.
+        self._notif_backoff = Backoff()
+        self._runs_backoff = Backoff()
 
     async def warm_up(self) -> None:
         """Run once before the loops start: identify and pull initial repos."""
@@ -185,6 +198,7 @@ class GitHubPoller:
     # ------------------------------------------------------------------
     async def _notifications_loop(self, should_stop: Callable[[], bool]) -> None:
         while not should_stop():
+            sleep_for = NOTIFICATIONS_INTERVAL
             try:
                 notifications = await self._client.list_notifications(
                     since=self._notifications_since
@@ -202,15 +216,23 @@ class GitHubPoller:
                     await self._bus.publish(ev)
                 if notifications:
                     self._notifications_since = max(n.updated_at for n in notifications)
+                self._notif_backoff.succeeded()
+                self._save_state()
             except Exception as e:
-                logger.warning("github notifications poll failed: %s", e)
-            await asyncio.sleep(NOTIFICATIONS_INTERVAL)
+                sleep_for = self._notif_backoff.failed()
+                logger.warning(
+                    "github notifications poll failed (attempt %d, backing off %.0fs): %s",
+                    self._notif_backoff.fails, sleep_for, e,
+                )
+            await asyncio.sleep(sleep_for)
 
     # ------------------------------------------------------------------
     # Workflow runs
     # ------------------------------------------------------------------
     async def _workflows_loop(self, should_stop: Callable[[], bool]) -> None:
         while not should_stop():
+            sleep_for = WORKFLOWS_INTERVAL
+            any_failure = False
             for repo in list(self._watched_repos):
                 if should_stop():
                     return
@@ -219,18 +241,18 @@ class GitHubPoller:
                         repo.full_name, actor=self._my_login or None, per_page=10
                     )
                 except Exception as e:
+                    any_failure = True
                     logger.debug("github runs poll failed for %s: %s", repo.full_name, e)
                     continue
                 seen = self._known_run_ids.setdefault(repo.full_name, set())
                 for run in runs:
-                    # Track that I pushed this branch (used by filter).
                     if run.branch and run.actor_login == self._my_login:
                         self._my_recent_branches[(repo.full_name, run.branch)] = run.created_at
                     if run.id in seen:
                         continue
                     seen.add(run.id)
                     if run.status != "completed":
-                        continue  # we'll see it again next tick when concluded
+                        continue
                     prev = self._filter_state.last_ci_conclusion.get(
                         (repo.full_name, run.branch or "")
                     )
@@ -244,4 +266,21 @@ class GitHubPoller:
                     ):
                         continue
                     await self._bus.publish(ev)
-            await asyncio.sleep(WORKFLOWS_INTERVAL)
+            if any_failure and self._watched_repos:
+                sleep_for = self._runs_backoff.failed()
+                logger.warning(
+                    "github runs: per-repo failures (attempt %d, backing off %.0fs)",
+                    self._runs_backoff.fails, sleep_for,
+                )
+            else:
+                self._runs_backoff.succeeded()
+                self._save_state()
+            await asyncio.sleep(sleep_for)
+
+    # ------------------------------------------------------------------
+    # State save/load
+    # ------------------------------------------------------------------
+    def _save_state(self) -> None:
+        if not self._persist:
+            return
+        save_github_state(self._filter_state, self._notifications_since)
