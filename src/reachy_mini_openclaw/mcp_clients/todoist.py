@@ -9,7 +9,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-TODOIST_API = "https://api.todoist.com/rest/v2"
+# Todoist deprecated /rest/v2 (returns 410 Gone). The unified API at
+# /api/v1 replaces it; the task and filter shapes match closely enough
+# that the rest of this client doesn't change.
+TODOIST_API = "https://api.todoist.com/api/v1"
 DEFAULT_TIMEOUT = 15.0
 
 
@@ -68,7 +71,11 @@ class TodoistClient:
         if resp.status_code == 401:
             logger.error("todoist: 401 unauthorized — check token")
         resp.raise_for_status()
-        return [_parse_task(t) for t in resp.json()]
+        body = resp.json()
+        # v1 API returns {"results": [...], "next_cursor": ...}; the older
+        # v2 returned a plain array. Handle both for resilience.
+        items = body.get("results", body) if isinstance(body, dict) else body
+        return [_parse_task(t) for t in items]
 
     async def create_task(
         self,
