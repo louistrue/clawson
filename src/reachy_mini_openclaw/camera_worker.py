@@ -63,35 +63,48 @@ class CameraWorker:
         self.last_face_detected_time: Optional[float] = None
         self.interpolation_start_time: Optional[float] = None
         self.interpolation_start_pose: Optional[NDArray[np.float32]] = None
-        self.face_lost_delay = 2.0  # seconds to wait before starting interpolation
+        # Wait longer before declaring the face truly lost — short glances
+        # away (looking at notes, sipping coffee) shouldn't trigger the
+        # return-to-neutral + scanning sequence.
+        self.face_lost_delay = 5.0
         self.interpolation_duration = 1.0  # seconds to interpolate back to neutral
 
         # Track state changes
         self.previous_head_tracking_state = self.is_head_tracking_enabled
         
         # Tracking scale factor (proportional gain for the camera-head servo loop).
-        # 0.85 provides accurate convergence via closed-loop feedback while
-        # avoiding single-frame overshoot that causes jitter.
-        # Lower scale = head moves a smaller fraction of the face delta,
-        # making the follow gentler and less stuttery on rapid head turns.
-        self.tracking_scale = 0.55
-        
-        # Smoothing factor for exponential moving average (0.0-1.0)
-        # At 25Hz with alpha=0.25, 95% convergence ~0.5s -- smooth enough to
-        # filter detection noise, responsive enough to feel like eye contact.
-        # Lower alpha → more lag, smoother motion. 0.12 reads as a soft,
-        # naturalistic head movement instead of the previous robotic snap.
-        self.smoothing_alpha = 0.12
-        
-        # Previous smoothed offsets for EMA calculation
-        self._smoothed_offsets: List[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        # Restored to 1.0 — head fully tracks the face. Smoothness comes from
+        # the 2nd-order filter below, not from clipping the target.
+        self.tracking_scale = 1.0
+
+        # Critically-damped 2nd-order ("spring-damper") low-pass filter on
+        # the offsets. Smooth-AND-snappy: target changes are tracked
+        # responsively but jerks/jitter are absorbed because acceleration
+        # is bounded.
+        #
+        #   acc = ω² (target - pos) − 2ζω · vel
+        #   vel += acc · dt
+        #   pos += vel · dt
+        #
+        # ζ = 1.0 = critical damping (no overshoot). ω is the natural
+        # frequency in rad/s — settling time ≈ 4/ω. ω=10 → ~0.4 s settle.
+        # Higher ω feels snappier; lower feels lazier. EMA is first-order
+        # and forces a trade-off between smoothness and lag; 2nd-order
+        # removes that.
+        self._smooth_omega = 10.0
+        self._smooth_zeta = 1.0
+        self._smooth_pos: List[float] = [0.0] * 6
+        self._smooth_vel: List[float] = [0.0] * 6
+        self._smooth_last_t: float = time.monotonic()
+        # Backwards-compat alias for any code that reads _smoothed_offsets.
+        self._smoothed_offsets: List[float] = self._smooth_pos
         
         # --- Room scanning state ---
         # When no face is visible, the robot periodically sweeps the room.
         self._scanning = False
         self._scanning_start_time = 0.0
         # Scanning pattern: sinusoidal yaw sweep
-        self._scan_yaw_amplitude = np.deg2rad(35)  # ±35 degrees
+        self._scan_yaw_amplitude = np.deg2rad(15)  # ±15° gentle peek
         self._scan_period = 8.0  # seconds for a full left-right-left cycle
         self._scan_pitch_offset = np.deg2rad(3)  # slight upward tilt while scanning
         # Start scanning immediately at boot (before any face has ever been seen)
@@ -127,8 +140,11 @@ class CameraWorker:
             enabled: Whether to enable face tracking
         """
         if enabled and not self.is_head_tracking_enabled:
-            # Reset smoothed offsets so tracking converges quickly from scratch
-            self._smoothed_offsets = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            # Reset spring filter state so tracking converges from rest.
+            self._smooth_pos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            self._smooth_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            self._smoothed_offsets = self._smooth_pos
+            self._smooth_last_t = time.monotonic()
             # Start scanning immediately when re-enabled
             self._start_scanning()
         self.is_head_tracking_enabled = enabled
@@ -165,19 +181,47 @@ class CameraWorker:
             self._scanning = False
             logger.debug("Stopped room scanning")
 
+    def _step_smoother(self, target: List[float]) -> List[float]:
+        """Critically-damped 2nd-order step toward `target`. Returns the new
+        smoothed pose offsets. Operates on the persistent _smooth_pos /
+        _smooth_vel state so transitions between face-tracking, scanning,
+        and neutral-return all flow through the same continuous filter.
+        """
+        now = time.monotonic()
+        dt = now - self._smooth_last_t
+        self._smooth_last_t = now
+        # Clamp dt so a long pause (or first call) doesn't kick the
+        # integrator into instability.
+        dt = max(0.001, min(0.08, dt))
+        omega = self._smooth_omega
+        zeta = self._smooth_zeta
+        omega_sq = omega * omega
+        two_zeta_omega = 2.0 * zeta * omega
+        for i in range(6):
+            err = target[i] - self._smooth_pos[i]
+            acc = omega_sq * err - two_zeta_omega * self._smooth_vel[i]
+            self._smooth_vel[i] += acc * dt
+            self._smooth_pos[i] += self._smooth_vel[i] * dt
+        # Keep alias in sync.
+        self._smoothed_offsets = self._smooth_pos
+        return list(self._smooth_pos)
+
     def _update_scanning_offsets(self, current_time: float) -> None:
-        """Compute scanning offsets -- a slow yaw sweep with slight pitch up.
-        
-        The sweep is sinusoidal so the head slows at the extremes (more natural)
-        and the face detector gets a chance to catch faces at the edges.
+        """Compute scanning targets -- a gentle yaw peek with slight pitch up.
+
+        Reduced amplitude (was theatrical at ±35°). Now ±15° so it reads
+        like the robot is glancing around briefly, not pacing the room.
+        Targets go through the spring smoother so transitions are fluid.
         """
         t = current_time - self._scanning_start_time
-        
+
         yaw = float(self._scan_yaw_amplitude * np.sin(2 * np.pi * t / self._scan_period))
         pitch = float(self._scan_pitch_offset)
-        
+
+        target = [0.0, 0.0, 0.0, 0.0, pitch, yaw]
+        smoothed = self._step_smoother(target)
         with self.face_tracking_lock:
-            self.face_tracking_offsets = [0.0, 0.0, 0.0, 0.0, pitch, yaw]
+            self.face_tracking_offsets = smoothed
 
     # ------------------------------------------------------------------
     # Main loop
@@ -261,9 +305,14 @@ class CameraWorker:
             # Stop scanning if we were scanning
             if self._scanning:
                 self._stop_scanning()
-                # Seed the EMA from current scanning offsets for smooth transition
+                # Seed the spring from current head pose for a fluid hand-off.
                 with self.face_tracking_lock:
-                    self._smoothed_offsets = list(self.face_tracking_offsets)
+                    self._smooth_pos = list(self.face_tracking_offsets)
+                    # Don't carry scanning velocity into face-tracking — start
+                    # the spring from rest so the transition reads as a snap-to.
+                    self._smooth_vel = [0.0] * 6
+                    self._smoothed_offsets = self._smooth_pos
+                self._smooth_last_t = time.monotonic()
 
             self.last_face_detected_time = current_time
             self.interpolation_start_time = None  # Stop any interpolation
@@ -292,21 +341,14 @@ class CameraWorker:
             translation *= self.tracking_scale
             rotation *= self.tracking_scale
 
-            # Apply exponential moving average (EMA) smoothing to reduce jitter
-            # new_smoothed = alpha * new_value + (1 - alpha) * old_smoothed
-            alpha = self.smoothing_alpha
-            new_offsets = [
+            # Critically-damped 2nd-order step toward the target offsets.
+            # Smooth + snappy: the spring tracks fast-moving faces without
+            # ringing, and stays glued during pauses.
+            target = [
                 translation[0], translation[1], translation[2],
                 rotation[0], rotation[1], rotation[2],
             ]
-            
-            smoothed = [
-                alpha * new_offsets[i] + (1 - alpha) * self._smoothed_offsets[i]
-                for i in range(6)
-            ]
-            self._smoothed_offsets = smoothed
-
-            # Thread-safe update of face tracking offsets
+            smoothed = self._step_smoother(target)
             with self.face_tracking_lock:
                 self.face_tracking_offsets = smoothed
 
