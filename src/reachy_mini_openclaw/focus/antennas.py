@@ -88,6 +88,7 @@ class AntennaPoller:
 
     async def run_until(self, should_stop: Callable[[], bool]) -> None:
         logger.info("antenna poller started (interval=%.2fs)", self.poll_interval_s)
+        _next_diag = 0.0
         while not should_stop():
             try:
                 pos = self.read_positions()
@@ -96,6 +97,11 @@ class AntennaPoller:
                 pos = None
 
             now = time.monotonic()
+            # Diagnostic: log raw positions once per second so we can verify
+            # the SDK is reporting live encoder values vs. commanded targets.
+            if pos is not None and now >= _next_diag:
+                logger.info("antenna_raw left=%.4f right=%.4f", pos[0], pos[1])
+                _next_diag = now + 1.0
             if pos is not None:
                 left_pos, right_pos = pos
                 ltrans, lev = self._left.feed(abs(left_pos), now)
