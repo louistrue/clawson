@@ -69,7 +69,9 @@ async def test_announce_callback_runs_with_prompt():
     await task
     assert captured
     assert "write tests" in captured[0]
-    assert "Right" in captured[0] and "left" in captured[0].lower()
+    msg = captured[0].lower()
+    assert "nod" in msg
+    assert "right" in msg and "left" in msg
 
 
 def test_confirm_with_no_pending_returns_false():

@@ -31,6 +31,20 @@ class ConfirmationSystem:
     def __init__(self) -> None:
         self._pending: Optional[_Pending] = None
         self._lock = asyncio.Lock()
+        # Listeners fire (is_pending: bool) whenever the pending state
+        # changes — used by main.py to pause face tracking during a
+        # confirmation so the head doesn't drift on the user.
+        self._listeners: list = []
+
+    def add_listener(self, cb: Callable[[bool], Awaitable[None]]) -> None:
+        self._listeners.append(cb)
+
+    async def _notify(self, pending: bool) -> None:
+        for cb in self._listeners:
+            try:
+                await cb(pending)
+            except Exception as e:
+                logger.debug("confirmation listener failed: %s", e)
 
     @property
     def has_pending(self) -> bool:
@@ -56,10 +70,13 @@ class ConfirmationSystem:
             my_pending = _Pending(description=description, future=future)
             self._pending = my_pending
 
+        await self._notify(True)
+
         if on_announce is not None:
             try:
                 await on_announce(
-                    f"Confirm: {description}. Right antenna to confirm, left to cancel."
+                    f"{description}. Nod or right antenna to confirm, "
+                    f"shake or left to cancel."
                 )
             except Exception as e:
                 logger.debug("confirm announce failed: %s", e)
@@ -75,6 +92,7 @@ class ConfirmationSystem:
             async with self._lock:
                 if self._pending is my_pending:
                     self._pending = None
+                    await self._notify(False)
 
     def confirm(self) -> bool:
         """Resolve the pending confirmation as True. Returns False if there

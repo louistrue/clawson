@@ -314,6 +314,23 @@ class ClawBodyCore:
         self.handler.confirmation = self.confirmation
         self.handler.clawson_actions = self.action_registry
 
+        # While a confirmation is pending, pause face tracking so the head
+        # doesn't drift as the user moves — that drift was producing
+        # gyro impulses indistinguishable from a deliberate nod/shake.
+        async def _face_pause_for_confirm(is_pending: bool) -> None:
+            cw = self.camera_worker
+            if cw is None:
+                return
+            try:
+                cw.is_head_tracking_enabled = not is_pending
+                logger.info(
+                    "face tracking %s for pending confirmation",
+                    "paused" if is_pending else "resumed",
+                )
+            except Exception as e:
+                logger.debug("face-track toggle failed: %s", e)
+        self.confirmation.add_listener(_face_pause_for_confirm)
+
         # Spoken announcement bridge — wired through OpenAIRealtimeHandler.say().
         async def _say(message: str) -> None:
             if not self.cost_tracker.tick():

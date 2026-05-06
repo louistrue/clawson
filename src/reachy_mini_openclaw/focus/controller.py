@@ -17,6 +17,20 @@ SNOOZE_TAP = timedelta(minutes=15)
 SNOOZE_DOUBLE = timedelta(hours=1)
 SNOOZE_HOLD = timedelta(hours=4)
 
+
+# Short contextual descriptions spoken when a mode change fires.
+# Kept tight so the robot's reply doesn't drag.
+_MODE_BLURB = {
+    FocusMode.DEEP: "Deep mode. Quiet until something critical.",
+    FocusMode.NORMAL: "Normal mode. Quick gestures and brief alerts.",
+    FocusMode.AVAILABLE: "Available mode. I'll narrate events.",
+    FocusMode.SNOOZED: "Snoozed.",
+}
+
+
+def _snooze_blurb(label: str) -> str:
+    return f"Snoozing {label}. Catch up later."
+
 # How often to check for snooze expiry when no antenna events fire.
 EXPIRY_CHECK_INTERVAL_S = 15.0
 
@@ -127,7 +141,7 @@ class FocusController:
     async def request_cycle(self) -> FocusMode:
         previous = self._state.mode
         new_mode = self._state.cycle()
-        await self._announce(f"focus mode {new_mode.value}")
+        await self._announce(_MODE_BLURB.get(new_mode, new_mode.value))
         save_state(self._state, self._state_path)
         await self._fire_change(previous)
         return new_mode
@@ -136,7 +150,7 @@ class FocusController:
         previous = self._state.mode
         until = self._state.snooze(duration)
         spoken = label or _humanise_duration(duration)
-        await self._announce(f"snoozing {spoken}")
+        await self._announce(_snooze_blurb(spoken))
         logger.info("snoozed until %s", until.isoformat())
         save_state(self._state, self._state_path)
         await self._fire_change(previous)
@@ -147,7 +161,8 @@ class FocusController:
         previous = self._state.mode
         # Cycle path triggers the restore + advance; instead, just restore.
         self._state._restore()  # type: ignore[attr-defined]
-        await self._announce(f"snooze cancelled; back to {self._state.mode.value}")
+        restored_blurb = _MODE_BLURB.get(self._state.mode, self._state.mode.value)
+        await self._announce(f"Back online. {restored_blurb}")
         save_state(self._state, self._state_path)
         await self._fire_change(previous)
 
@@ -159,7 +174,7 @@ class FocusController:
         self._state.mode = target
         self._state.snooze_until = None
         self._state.previous_mode = None
-        await self._announce(f"focus mode {target.value}")
+        await self._announce(_MODE_BLURB.get(target, target.value))
         save_state(self._state, self._state_path)
         await self._fire_change(previous)
 

@@ -713,12 +713,12 @@ OpenClaw has access to many capabilities you don't have directly.""",
                     # ["audio"] alone is rejected.
                     "modalities": ["audio", "text"],
                     "instructions": (
-                        "Output language: English ONLY. Do not use any other "
-                        "language regardless of prior conversation context. "
-                        "Speak the following announcement aloud verbatim, "
-                        "in your normal voice, with no greeting and no extra "
-                        "commentary. Do not translate. "
-                        f'Announcement: "{text}"'
+                        f"You are saying this short status update aloud in "
+                        f"English, in your normal voice. Do not add a greeting, "
+                        f"a preamble, the word 'announcement', quotation marks, "
+                        f"or any commentary. Do not translate. Just speak it "
+                        f"naturally and stop:\n\n"
+                        f"{text}"
                     ),
                 }
             )
