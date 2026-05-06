@@ -204,6 +204,7 @@ class ClawBodyCore:
             make_head_joints_reader,
             make_imu_reader,
         )
+        from reachy_mini_openclaw.focus.companion import CompanionPresence
         from reachy_mini_openclaw.mcp_clients.github import GitHubClient
         from reachy_mini_openclaw.clawson_config import load_clawson_config
         
@@ -361,6 +362,27 @@ class ClawBodyCore:
         async def _on_standup_request() -> None:
             await self.standup_runner.run_now()
 
+        # Wiggle factory used by both head-gesture confirmation feedback
+        # and the antenna confirmation feedback. Imported lazily so the
+        # gestures module's reachy_mini deps stay scoped.
+        from reachy_mini_openclaw.gestures import WiggleAntennaMove as _WiggleMove
+
+        def _make_wiggle(side: str):
+            pose = self.movement_manager.state.last_primary_pose
+            head, ant, _yaw = pose if pose is not None else (None, (0.0, 0.0), 0.0)
+            if head is None:
+                return None
+            return _WiggleMove(side, head, ant)
+
+        async def _antenna_confirm_feedback(side: str) -> None:
+            move = _make_wiggle(side)
+            if move is None:
+                return
+            try:
+                self.movement_manager.queue_move(move)
+            except Exception as e:
+                logger.debug("antenna confirm wiggle failed: %s", e)
+
         self.focus_controller = FocusController(
             position_reader=make_robot_antenna_reader(self.robot),
             on_announce=_announce_focus,
@@ -368,6 +390,7 @@ class ClawBodyCore:
             on_rollup_request=_on_rollup_request,
             on_standup_request=_on_standup_request,
             confirmation=self.confirmation,
+            on_antenna_confirm_feedback=_antenna_confirm_feedback,
         )
 
         # Event-pipeline announce hook (Phase 3): summary spoken when
@@ -527,6 +550,16 @@ class ClawBodyCore:
             camera_worker=self.camera_worker,
             focus_settings=self.clawson_cfg.focus,
             is_within_active_hours=is_within_active_hours,
+        )
+
+        # Companion presence: dozes / sleeps when no face is around,
+        # wiggles antennas when a face reappears.
+        self.companion_presence = CompanionPresence(
+            camera_worker=self.camera_worker,
+            movement_manager=self.movement_manager,
+            focus_settings=self.clawson_cfg.focus,
+            wiggle_factory=_make_wiggle,
+            on_say=_say,
         )
 
         # Head-gesture detector (nod = yes, shake = no).
@@ -799,6 +832,11 @@ class ClawBodyCore:
         self._tasks.append(
             asyncio.create_task(
                 self.presence_auto_snooze.run(self._should_stop), name="presence"
+            )
+        )
+        self._tasks.append(
+            asyncio.create_task(
+                self.companion_presence.run(self._should_stop), name="companion"
             )
         )
         self._tasks.append(

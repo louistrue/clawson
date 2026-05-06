@@ -77,7 +77,9 @@ class CameraWorker:
         # Smoothing factor for exponential moving average (0.0-1.0)
         # At 25Hz with alpha=0.25, 95% convergence ~0.5s -- smooth enough to
         # filter detection noise, responsive enough to feel like eye contact.
-        self.smoothing_alpha = 0.25
+        # Lower alpha → more lag, smoother motion. 0.12 reads as a soft,
+        # naturalistic head movement instead of the previous robotic snap.
+        self.smoothing_alpha = 0.12
         
         # Previous smoothed offsets for EMA calculation
         self._smoothed_offsets: List[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

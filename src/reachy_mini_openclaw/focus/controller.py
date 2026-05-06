@@ -68,6 +68,10 @@ class FocusController:
         on_rollup_request: Optional[Callable[[], Awaitable[None]]] = None,
         on_standup_request: Optional[Callable[[], Awaitable[None]]] = None,
         confirmation: Optional[Any] = None,            # actions.ConfirmationSystem
+        # Fires `(side: "right"|"left")` when an antenna confirm or deny
+        # resolves a pending question — used by main to queue the snappy
+        # antenna wiggle for visual ack.
+        on_antenna_confirm_feedback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> None:
         self._state_path = state_path
         self._state: FocusState = load_state(state_path)
@@ -77,6 +81,7 @@ class FocusController:
         self._on_rollup_request = on_rollup_request
         self._on_standup_request = on_standup_request
         self._confirmation = confirmation
+        self._on_antenna_confirm_feedback = on_antenna_confirm_feedback
 
         if position_reader is not None:
             self._poller = AntennaPoller(
@@ -134,6 +139,13 @@ class FocusController:
             self._confirmation.confirm()
         elif ev.side == "left":
             self._confirmation.deny()
+        else:
+            return
+        if self._on_antenna_confirm_feedback is not None:
+            try:
+                await self._on_antenna_confirm_feedback(ev.side)
+            except Exception as e:
+                logger.debug("antenna-confirm feedback failed: %s", e)
 
     # ------------------------------------------------------------------
     # Public action API — used by antenna handler AND the widget.
