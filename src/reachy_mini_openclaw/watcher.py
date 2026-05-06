@@ -39,7 +39,7 @@ from urllib.parse import urlparse
 
 # Tunables. The big one is STABLE_ONLINE_PROBES — see comment below.
 POLL_INTERVAL_S = 10.0
-GRACE_S = 60.0                  # offline grace before stopping clawson
+GRACE_S = 10.0                  # offline grace before stopping clawson
 TCP_CONNECT_TIMEOUT_S = 3.0     # how long to wait for the SYN-ACK
 APP_RESPONSE_TIMEOUT_S = 2.0    # how long to wait for actual HTTP bytes
 # Hold-off for "online" — require this many consecutive successful

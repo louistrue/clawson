@@ -1178,6 +1178,7 @@ class ClawBodyCore:
                 (float(_OFF_ANTENNAS[0]), float(_OFF_ANTENNAS[1])),
                 0.0,
             )
+            logger.info("graceful shutdown: final_pose set (off-pose hold)")
         except Exception as e:
             logger.warning("graceful shutdown: off-pose queue failed: %s", e)
         # Cancel any in-flight TTS so the speaker isn't talking while we
@@ -1209,6 +1210,10 @@ class ClawBodyCore:
         # Stop movement system. If graceful_shutdown set a final_pose
         # (off-pose), pass it through so the daemon holds it post-exit.
         self.head_wobbler.stop()
+        logger.info(
+            "app.stop: passing final_pose=%s to MovementManager",
+            "OFF-POSE" if self._final_pose is not None else "None (will reset to neutral)",
+        )
         self.movement_manager.stop(final_pose=self._final_pose)
 
         # Close Clawson HTTP clients.

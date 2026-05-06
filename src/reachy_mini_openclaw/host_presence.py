@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 #                     short network blips or PC sleep transitions.
 #   PROBE_TIMEOUT_S — TCP connect timeout. Short so polls don't pile up.
 POLL_INTERVAL_S = 10.0
-GRACE_S = 60.0
+GRACE_S = 10.0
 PROBE_TIMEOUT_S = 3.0
 
 
