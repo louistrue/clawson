@@ -187,6 +187,17 @@ class ClawBodyCore:
             FaceDetectStandupTrigger,
             make_voice_trigger,
         )
+        from reachy_mini_openclaw.briefing.event_log import EventLog
+        from reachy_mini_openclaw.briefing.todoist_poller import TodoistPoller
+        from reachy_mini_openclaw.briefing.calendar_poller import CalendarPoller
+        from reachy_mini_openclaw.mcp_clients.todoist import TodoistClient
+        from reachy_mini_openclaw.mcp_clients.calendar_ics import CalendarIcsClient
+        from reachy_mini_openclaw.actions import (
+            Action,
+            ActionRegistry,
+            ConfirmationSystem,
+        )
+        from reachy_mini_openclaw.focus.presence import PresenceAutoSnooze
         from reachy_mini_openclaw.mcp_clients.github import GitHubClient
         from reachy_mini_openclaw.clawson_config import load_clawson_config
         
@@ -291,6 +302,12 @@ class ClawBodyCore:
         # Daily voice budget — protects against runaway poller bugs.
         self.cost_tracker = CostTracker()
 
+        # Action mode — confirmation system + registry for write tools.
+        self.confirmation = ConfirmationSystem()
+        self.action_registry = ActionRegistry()
+        self.handler.confirmation = self.confirmation
+        self.handler.clawson_actions = self.action_registry
+
         # Spoken announcement bridge — wired through OpenAIRealtimeHandler.say().
         async def _say(message: str) -> None:
             if not self.cost_tracker.tick():
@@ -327,6 +344,7 @@ class ClawBodyCore:
             on_change=_on_focus_change,
             on_rollup_request=_on_rollup_request,
             on_standup_request=_on_standup_request,
+            confirmation=self.confirmation,
         )
 
         # Event-pipeline announce hook (Phase 3): summary spoken when
@@ -345,6 +363,7 @@ class ClawBodyCore:
 
         self.event_bus = EventBus()
         self.mute_list = load_mutes()
+        self.event_log = EventLog()
         self.event_dispatcher = EventDispatcher(
             self.event_bus,
             focus_mode_provider=lambda: self.focus_controller.mode,
@@ -353,6 +372,7 @@ class ClawBodyCore:
             active_hours_provider=_active_hours_now,
             audio_sink=self.robot.media,
             mute_list=self.mute_list,
+            event_log=self.event_log,
         )
 
         # Morning standup. Drains queued events from the dispatcher into a
@@ -385,6 +405,8 @@ class ClawBodyCore:
                 host=os.getenv("CLAWSON_WIDGET_HOST", "127.0.0.1"),
                 port=int(os.getenv("CLAWSON_WIDGET_PORT", "7860")),
                 mute_list=self.mute_list,
+                event_log=self.event_log,
+                event_bus=self.event_bus,
             )
         self.github_client: Optional[Any] = None
         self.github_poller: Optional[Any] = None
@@ -404,6 +426,74 @@ class ClawBodyCore:
             self.vercel_client = VercelClient(self.clawson_cfg.vercel_token)
             self.vercel_poller = VercelPoller(self.vercel_client, self.event_bus)
             logger.info("Clawson: Vercel poller armed")
+
+        # Todoist poller + add-task action.
+        self.todoist_client: Optional[Any] = None
+        self.todoist_poller: Optional[Any] = None
+        if self.clawson_cfg.todoist_enabled:
+            self.todoist_client = TodoistClient(self.clawson_cfg.todoist_token)
+            self.todoist_poller = TodoistPoller(self.todoist_client, self.event_bus)
+            logger.info("Clawson: Todoist poller armed")
+            # Register add-task as a confirm-gated action.
+            async def _todoist_add(args: dict) -> dict:
+                content = args.get("content") or ""
+                due_string = args.get("due_string")
+                if not content:
+                    return {"status": "error", "error": "content required"}
+                task = await self.todoist_client.create_task(
+                    content, due_string=due_string,
+                )
+                return {"status": "ok", "id": task.id, "url": task.url}
+
+            self.action_registry.register(Action(
+                name="todoist_add_task",
+                tool_spec={
+                    "type": "function",
+                    "name": "todoist_add_task",
+                    "description": (
+                        "Add a new Todoist task. Requires user confirmation via "
+                        "antenna press before it executes."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "Task title",
+                            },
+                            "due_string": {
+                                "type": "string",
+                                "description": (
+                                    "Natural-language due date, e.g. 'tomorrow at 9am'"
+                                ),
+                            },
+                        },
+                        "required": ["content"],
+                    },
+                },
+                executor=_todoist_add,
+                requires_confirmation=True,
+                preview=lambda args: (
+                    f"Add Todoist task: '{args.get('content', '?')}'"
+                    + (f" due {args.get('due_string')}" if args.get("due_string") else "")
+                ),
+            ))
+
+        # Calendar poller (ICS feed).
+        self.calendar_client: Optional[Any] = None
+        self.calendar_poller: Optional[Any] = None
+        if self.clawson_cfg.calendar_enabled:
+            self.calendar_client = CalendarIcsClient(self.clawson_cfg.calendar_ics_url)
+            self.calendar_poller = CalendarPoller(self.calendar_client, self.event_bus)
+            logger.info("Clawson: Calendar poller armed")
+
+        # Presence-aware auto-snooze.
+        self.presence_auto_snooze = PresenceAutoSnooze(
+            focus_controller=self.focus_controller,
+            camera_worker=self.camera_worker,
+            focus_settings=self.clawson_cfg.focus,
+            is_within_active_hours=is_within_active_hours,
+        )
         
     def _initialize_vision_manager(self) -> Optional[Any]:
         """Initialize local vision processor (SmolVLM2).
@@ -623,6 +713,23 @@ class ClawBodyCore:
                     self.vercel_poller.run(self._should_stop), name="vercel-poller"
                 )
             )
+        if self.todoist_poller is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self.todoist_poller.run(self._should_stop), name="todoist-poller"
+                )
+            )
+        if self.calendar_poller is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self.calendar_poller.run(self._should_stop), name="calendar-poller"
+                )
+            )
+        self._tasks.append(
+            asyncio.create_task(
+                self.presence_auto_snooze.run(self._should_stop), name="presence"
+            )
+        )
         if self.widget_server is not None:
             self._tasks.append(
                 asyncio.create_task(
@@ -650,7 +757,9 @@ class ClawBodyCore:
         self.movement_manager.stop()
 
         # Close Clawson HTTP clients.
-        for client_attr in ("github_client", "vercel_client"):
+        for client_attr in (
+            "github_client", "vercel_client", "todoist_client", "calendar_client",
+        ):
             client = getattr(self, client_attr, None)
             if client is None:
                 continue

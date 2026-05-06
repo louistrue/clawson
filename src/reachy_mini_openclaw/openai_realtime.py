@@ -129,6 +129,13 @@ class OpenAIRealtimeHandler(AsyncStreamHandler):
         # uses it for the "voice command" trigger (e.g. saying "standup").
         self.on_user_transcript: Optional[Any] = None
 
+        # Clawson action mode — extra tool specs and a registry of executors.
+        # Write actions are gated through `confirmation`. Both stay None on
+        # vanilla clawbody installs; the handler falls through to upstream
+        # dispatch when they're unset.
+        self.clawson_actions: Optional[Any] = None    # ActionRegistry
+        self.confirmation: Optional[Any] = None       # ConfirmationSystem
+
         # OpenAI connection
         self.client: Optional[AsyncOpenAI] = None
         self.connection: Any = None
@@ -189,7 +196,12 @@ OpenClaw has access to many capabilities you don't have directly.""",
                     "required": ["query"]
                 }
             })
-        
+
+        # Clawson action-mode tools (Todoist add task, etc.).
+        if self.clawson_actions is not None:
+            for spec in self.clawson_actions.tool_specs():
+                tools.append(spec)
+
         return tools
         
     async def start_up(self) -> None:
@@ -417,12 +429,19 @@ OpenClaw has access to many capabilities you don't have directly.""",
         self.deps.movement_manager.set_processing(True)
         
         try:
-            if tool_name == "ask_openclaw":
+            # Clawson actions get first crack — write actions are gated through
+            # ConfirmationSystem before they execute.
+            clawson_action = (
+                self.clawson_actions.get(tool_name) if self.clawson_actions is not None else None
+            )
+            if clawson_action is not None:
+                result = await self._dispatch_clawson_action(clawson_action, args_json)
+            elif tool_name == "ask_openclaw":
                 result = await self._handle_openclaw_query(args_json)
             else:
                 # Robot movement tools - dispatch locally
                 result = await dispatch_tool_call(tool_name, args_json, self.deps)
-                
+
             logger.debug("Tool '%s' result: %s", tool_name, str(result)[:100])
         except Exception as e:
             logger.error("Tool '%s' failed: %s", tool_name, e)
@@ -440,6 +459,35 @@ OpenClaw has access to many capabilities you don't have directly.""",
             # Trigger response generation after tool result
             await self.connection.response.create()
             
+    async def _dispatch_clawson_action(self, action: Any, args_json: str) -> dict:
+        """Run a Clawson action; gate write actions through ConfirmationSystem."""
+        try:
+            args = json.loads(args_json) if args_json else {}
+        except Exception:
+            args = {}
+        if action.requires_confirmation:
+            if self.confirmation is None:
+                logger.warning(
+                    "action %r needs confirmation but no system is wired", action.name
+                )
+                return {"status": "error", "error": "confirmation system unavailable"}
+            preview = ""
+            try:
+                preview = action.preview(args) or ""
+            except Exception as e:
+                logger.debug("preview render failed: %s", e)
+            ok = await self.confirmation.request(
+                preview or action.name,
+                on_announce=self.say,
+            )
+            if not ok:
+                return {"status": "cancelled", "reason": "user did not confirm"}
+        try:
+            return await action.executor(args) or {}
+        except Exception as e:
+            logger.error("action %r executor failed: %s", action.name, e)
+            return {"status": "error", "error": str(e)}
+
     async def _sync_to_openclaw(self) -> None:
         """Sync the last conversation turn to OpenClaw for memory continuity."""
         if not self.openclaw_bridge or not self.openclaw_bridge.is_connected:

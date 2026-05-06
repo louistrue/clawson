@@ -7,6 +7,7 @@ from typing import Awaitable, Callable, List, Optional
 
 from ..clawson_config import FocusSettings
 from .events import Event
+from .narrator import narrate
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,18 @@ def _format_script(events: List[Event]) -> str:
     if "vercel_deploy_success" in by_kind:
         n = len(by_kind["vercel_deploy_success"])
         parts.append(f"{n} Vercel deploy{'s' if n != 1 else ''} shipped.")
+    if "todoist_overdue" in by_kind:
+        n = len(by_kind["todoist_overdue"])
+        parts.append(f"{n} task{'s' if n != 1 else ''} overdue.")
+    if "todoist_due_today" in by_kind:
+        n = len(by_kind["todoist_due_today"])
+        parts.append(f"{n} task{'s' if n != 1 else ''} due today.")
+    if "calendar_starting_soon" in by_kind:
+        n = len(by_kind["calendar_starting_soon"])
+        parts.append(f"{n} meeting{'s' if n != 1 else ''} coming up.")
     if "auth_failed" in by_kind:
         sources = sorted({e.source for e in by_kind["auth_failed"]})
         parts.append(f"Token rejected for {' and '.join(sources)} — update config.")
+    # Pattern-detection narration appended last so the rollup feels alive.
+    parts.extend(narrate(events))
     return " ".join(parts)

@@ -11,7 +11,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 
 from ..briefing.dispatcher import EventDispatcher
-from ..briefing.events import Event
+from ..briefing.event_log import EventLog
+from ..briefing.events import Event, EventBus
 from ..briefing.mutes import MuteList, save_mutes
 from ..briefing.standup import StandupRunner, is_within_active_hours
 from ..clawson_config import FocusSettings
@@ -52,12 +53,16 @@ class WidgetServer:
         host: str = "127.0.0.1",
         port: int = 7860,
         mute_list: Optional[MuteList] = None,
+        event_log: Optional[EventLog] = None,
+        event_bus: Optional[EventBus] = None,
     ) -> None:
         self._focus = focus_controller
         self._dispatcher = event_dispatcher
         self._standup = standup_runner
         self._focus_settings = focus_settings
         self._mute_list = mute_list
+        self._event_log = event_log
+        self._event_bus = event_bus
         self._host = host
         self._port = port
         self._app = FastAPI(title="Clawson Widget", docs_url=None, redoc_url=None)
@@ -175,6 +180,48 @@ class WidgetServer:
             except Exception as e:
                 logger.debug("save_mutes failed: %s", e)
             return JSONResponse({"removed": removed, "mutes": self._mute_list.to_dict()})
+
+        @app.get("/api/log")
+        async def log_recent(
+            days: int = 1,
+            source: Optional[str] = None,
+            kind: Optional[str] = None,
+            limit: int = 200,
+        ) -> JSONResponse:
+            if self._event_log is None:
+                return JSONResponse({"events": []})
+            events = self._event_log.read_recent(
+                days=max(1, min(days, 14)),
+                source=source,
+                kind=kind,
+                limit=max(1, min(limit, 1000)),
+            )
+            return JSONResponse({"events": [_serialise_event(e) for e in events]})
+
+        @app.post("/api/log/replay")
+        async def log_replay(req: Request) -> JSONResponse:
+            if self._event_log is None or self._event_bus is None:
+                raise HTTPException(status_code=503, detail="event log/bus unavailable")
+            body = {}
+            try:
+                body = await req.json()
+            except Exception:
+                pass
+            fingerprint = body.get("fingerprint")
+            if not fingerprint:
+                raise HTTPException(status_code=400, detail="fingerprint required")
+            event = self._event_log.find_by_fingerprint(fingerprint)
+            if event is None:
+                raise HTTPException(status_code=404, detail="event not found")
+            await self._event_bus.publish(event)
+            return JSONResponse({"replayed": event.fingerprint})
+
+        @app.get("/api/pending_confirmation")
+        async def pending_confirm() -> JSONResponse:
+            confirmation = getattr(self._focus, "_confirmation", None)
+            if confirmation is None or not confirmation.has_pending:
+                return JSONResponse({"pending": None})
+            return JSONResponse({"pending": confirmation.pending_description})
 
     async def run(self, should_stop: Callable[[], bool]) -> None:
         config = uvicorn.Config(

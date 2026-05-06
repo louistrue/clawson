@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Deque, Optional
 
 from ..focus.modes import FocusMode
 from ..gestures import cue_for_event, gesture_for_event
+from .event_log import EventLog
 from .events import Event, EventBus, EventSeverity
 from .mutes import MuteList
 
@@ -42,6 +43,7 @@ class EventDispatcher:
         active_hours_provider: Optional[Callable[[], bool]] = None,
         audio_sink: Optional[Any] = None,            # robot.media-shaped
         mute_list: Optional[MuteList] = None,
+        event_log: Optional[EventLog] = None,
     ) -> None:
         self._bus = bus
         self._focus_mode_provider = focus_mode_provider
@@ -50,6 +52,7 @@ class EventDispatcher:
         self._active_hours_provider = active_hours_provider
         self._audio_sink = audio_sink
         self._mute_list = mute_list or MuteList()
+        self._event_log = event_log
         self._recent: Deque[tuple[str, datetime]] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._queued: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
         self._recent_events: Deque[Event] = deque(maxlen=DEDUP_HISTORY_CAP)
@@ -87,6 +90,8 @@ class EventDispatcher:
             return
         self._recent.append((event.fingerprint, datetime.now(timezone.utc)))
         self._recent_events.append(event)
+        if self._event_log is not None:
+            self._event_log.append(event)
 
         mode = self._focus_mode_provider()
         action = self._decide(event, mode)

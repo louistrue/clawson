@@ -79,4 +79,8 @@ def cue_for_event(kind: str, sr: int) -> Optional[np.ndarray]:
     if kind in {"review_requested", "mention", "issue_assigned"}:
         # Soft mid blip.
         return _blip(sr, 0.10, 440.0)
+    if kind == "todoist_overdue":
+        return _chirp(sr, 0.18, 320.0, 220.0)  # softer descending
+    if kind in {"todoist_due_today", "calendar_starting_soon"}:
+        return _blip(sr, 0.12, 520.0)
     return None

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import timedelta
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from .antennas import AntennaEvent, AntennaPoller, PositionReader
 from .modes import FocusMode, FocusState
@@ -53,6 +53,7 @@ class FocusController:
         on_announce: Optional[Callable[[str], Awaitable[None]]] = None,
         on_rollup_request: Optional[Callable[[], Awaitable[None]]] = None,
         on_standup_request: Optional[Callable[[], Awaitable[None]]] = None,
+        confirmation: Optional[Any] = None,            # actions.ConfirmationSystem
     ) -> None:
         self._state_path = state_path
         self._state: FocusState = load_state(state_path)
@@ -61,6 +62,7 @@ class FocusController:
         self._on_announce = on_announce
         self._on_rollup_request = on_rollup_request
         self._on_standup_request = on_standup_request
+        self._confirmation = confirmation
 
         if position_reader is not None:
             self._poller = AntennaPoller(
@@ -105,6 +107,21 @@ class FocusController:
 
     async def _handle_event(self, ev: AntennaEvent) -> None:
         logger.info("antenna event: side=%s kind=%s", ev.side, ev.kind)
+
+        # While an action is awaiting confirmation, antenna taps are
+        # repurposed: right = confirm, left = cancel. Holds and 'both'
+        # still go to their normal handlers so the user can always escape.
+        if (
+            self._confirmation is not None
+            and self._confirmation.has_pending
+            and ev.kind == "tap"
+        ):
+            if ev.side == "right":
+                self._confirmation.confirm()
+                return
+            if ev.side == "left":
+                self._confirmation.deny()
+                return
 
         if ev.side == "right" and ev.kind == "tap":
             await self.request_cycle()
